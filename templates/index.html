@@ -1,0 +1,894 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>DEHU — Descargador Lite</title>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body { font-family: 'Inter', -apple-system, sans-serif; background: #f3f4f6; color: #1f2937; }
+
+        /* ── Header ── */
+        .header {
+            background: linear-gradient(135deg, #3952d7, #5375f7); /* Color from the uploaded image */
+            color: white;
+            padding: 0 24px;
+            height: 64px;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            box-shadow: 0 4px 12px rgba(73, 107, 244, 0.2);
+        }
+        .header-left { display: flex; align-items: center; gap: 14px; }
+        .header-left .logo { height: 26px; }
+        .header-left .divider { width: 1px; height: 28px; background: rgba(255,255,255,0.3); margin: 0 4px; }
+        .header-left .title { font-weight: 700; font-size: 15px; letter-spacing: 0.5px; }
+        .header-right { display: flex; align-items: center; gap: 16px; font-size: 13px; }
+        .header-right .user { color: #94a3b8; }
+        .header-right a { color: #94a3b8; text-decoration: none; transition: color 0.2s; }
+        .header-right a:hover { color: white; }
+
+        /* ── Container ── */
+        .container { max-width: 1200px; margin: 24px auto; padding: 0 20px; }
+        .main-title { font-size: 28px; font-weight: 700; margin-bottom: 20px; color: #111827; }
+
+        /* ── Tabs ── */
+        .tabs { display: flex; gap: 2px; margin-bottom: 0; }
+        .tab {
+            padding: 10px 24px;
+            font-size: 14px;
+            font-weight: 600;
+            cursor: pointer;
+            border-radius: 10px 10px 0 0;
+            background: #e5e7eb;
+            color: #6b7280;
+            transition: all 0.2s;
+            user-select: none;
+        }
+        .tab:hover { background: #d1d5db; }
+        .tab.active { background: white; color: #1e40af; box-shadow: 0 -2px 8px rgba(0,0,0,0.06); }
+
+        /* ── Section ── */
+        .seccion {
+            background: white;
+            border-radius: 0 12px 12px 12px;
+            padding: 24px;
+            box-shadow: 0 1px 4px rgba(0,0,0,0.06);
+        }
+        .tab-content { display: none; }
+        .tab-content.active { display: block; }
+
+        /* ── Toolbar ── */
+        .toolbar { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; margin-bottom: 16px; }
+        .toolbar input[type="date"], .toolbar input[type="text"], .toolbar select {
+            padding: 7px 12px;
+            border: 1.5px solid #d1d5db;
+            border-radius: 8px;
+            font-size: 13px;
+            font-family: inherit;
+        }
+        .toolbar input[type="text"] { min-width: 220px; }
+
+        /* ── Button ── */
+        .btn {
+            padding: 8px 18px;
+            border: none;
+            border-radius: 8px;
+            font-size: 13px;
+            font-weight: 600;
+            cursor: pointer;
+            font-family: inherit;
+            transition: all 0.2s;
+        }
+        .btn-primary { background: linear-gradient(135deg, #2563eb, #1d4ed8); color: white; }
+        .btn-primary:hover:not(:disabled) { box-shadow: 0 2px 8px rgba(37,99,235,0.4); }
+        .btn-primary:disabled { opacity: 0.5; cursor: not-allowed; }
+        .btn-green { background: linear-gradient(135deg, #10b981, #059669); color: white; }
+
+        /* ── Table ── */
+        .table-container { max-height: 400px; overflow-y: auto; border: 1px solid #e5e7eb; border-radius: 8px; }
+        table { width: 100%; border-collapse: collapse; font-size: 13px; }
+        thead { position: sticky; top: 0; z-index: 1; }
+        th { background: #f8fafc; padding: 10px 12px; text-align: left; font-weight: 600; color: #374151; border-bottom: 2px solid #e5e7eb; }
+        td { padding: 8px 12px; border-bottom: 1px solid #f3f4f6; }
+        tr:hover { background: #f8fafc; }
+        .concepto-cell { max-width: 300px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+        .empty-msg { text-align: center; padding: 40px; color: #9ca3af; }
+        .empty-icon { font-size: 3rem; margin-bottom: 8px; }
+
+        /* ── Badges ── */
+        .badge {
+            display: inline-block;
+            padding: 3px 10px;
+            border-radius: 12px;
+            font-size: 11px;
+            font-weight: 600;
+        }
+        .badge-com { background: #dbeafe; color: #1e40af; }
+        .badge-not { background: #fef3c7; color: #92400e; }
+
+        /* ── Category selector ── */
+        .cat-selector {
+            display: none;
+            padding: 8px 16px;
+            background: #f0f4f8;
+            border-radius: 8px;
+            margin-bottom: 10px;
+            border: 1px solid #d0d9e3;
+            font-size: 13px;
+        }
+        .cat-selector label { margin-right: 10px; cursor: pointer; font-size: 12px; }
+        .cat-selector .cat-title { font-weight: 600; color: #444; margin-right: 12px; }
+
+        /* ── Counter ── */
+        .counter { font-size: 13px; color: #6b7280; margin-bottom: 12px; }
+
+        /* ── Progress panel ── */
+        .progress-panel {
+            display: none;
+            margin-top: 24px;
+            background: #f8fafc;
+            border: 1px solid #e5e7eb;
+            border-radius: 12px;
+            padding: 20px;
+        }
+        .progress-bar-wrap {
+            background: #e5e7eb;
+            border-radius: 8px;
+            height: 10px;
+            overflow: hidden;
+            margin-bottom: 12px;
+        }
+        .progress-bar {
+            height: 100%;
+            background: linear-gradient(90deg, #3b82f6, #2563eb);
+            border-radius: 8px;
+            transition: width 0.3s;
+            width: 0%;
+        }
+        .progress-text { font-size: 13px; font-weight: 600; color: #374151; margin-bottom: 8px; }
+        .log-area {
+            background: #1e293b;
+            color: #94a3b8;
+            border-radius: 8px;
+            padding: 12px 16px;
+            font-family: 'Courier New', monospace;
+            font-size: 12px;
+            max-height: 300px;
+            overflow-y: auto;
+            line-height: 1.6;
+        }
+        .log-ok { color: #4ade80; }
+        .log-err { color: #f87171; }
+        .log-warn { color: #fbbf24; }
+        .log-info { color: #94a3b8; }
+
+        /* ── Download banner ── */
+        .download-banner {
+            display: none;
+            background: linear-gradient(135deg, #ecfdf5, #d1fae5);
+            border: 1px solid #6ee7b7;
+            border-radius: 12px;
+            padding: 16px 20px;
+            margin-top: 16px;
+            text-align: center;
+        }
+        .download-banner .icon { font-size: 28px; margin-bottom: 6px; }
+        .download-banner a {
+            display: inline-block;
+            margin-top: 8px;
+            padding: 10px 24px;
+            background: linear-gradient(135deg, #10b981, #059669);
+            color: white;
+            border-radius: 10px;
+            text-decoration: none;
+            font-weight: 600;
+            font-size: 14px;
+            transition: all 0.2s;
+        }
+        .download-banner a:hover { box-shadow: 0 4px 12px rgba(16,185,129,0.4); }
+
+        .warning-30 {
+            display: none;
+            background: #fffbeb;
+            border: 1px solid #fde68a;
+            border-radius: 8px;
+            padding: 10px 16px;
+            font-size: 12px;
+            color: #92400e;
+            margin-bottom: 10px;
+        }
+
+        /* ── Loading overlay (FIX 1) ── */
+        .loading-overlay {
+            display: none;
+            position: fixed;
+            inset: 0;
+            background: rgba(15,23,42,0.55);
+            backdrop-filter: blur(2px);
+            z-index: 9999;
+            justify-content: center;
+            align-items: center;
+            flex-direction: column;
+            gap: 16px;
+        }
+        .loading-overlay.active { display: flex; }
+        .loading-spinner {
+            width: 56px;
+            height: 56px;
+            border: 5px solid rgba(255,255,255,0.2);
+            border-top-color: #3b82f6;
+            border-radius: 50%;
+            animation: spin 0.8s linear infinite;
+        }
+        .loading-text {
+            color: white;
+            font-size: 15px;
+            font-weight: 600;
+            letter-spacing: 0.3px;
+        }
+        @keyframes spin { to { transform: rotate(360deg); } }
+
+        /* ── Modal (FIX 2) ── */
+        .modal-backdrop {
+            display: none;
+            position: fixed;
+            inset: 0;
+            background: rgba(15,23,42,0.5);
+            backdrop-filter: blur(2px);
+            z-index: 10000;
+            justify-content: center;
+            align-items: center;
+        }
+        .modal-backdrop.active { display: flex; }
+        .modal-box {
+            background: white;
+            border-radius: 16px;
+            padding: 28px 32px;
+            max-width: 440px;
+            width: 90%;
+            box-shadow: 0 25px 60px rgba(0,0,0,0.3);
+            text-align: center;
+            animation: modalIn 0.2s ease-out;
+        }
+        @keyframes modalIn { from { transform: scale(0.9); opacity: 0; } to { transform: scale(1); opacity: 1; } }
+        .modal-icon { font-size: 36px; margin-bottom: 12px; }
+        .modal-title { font-size: 16px; font-weight: 700; color: #1e293b; margin-bottom: 8px; }
+        .modal-msg { font-size: 14px; color: #475569; line-height: 1.5; margin-bottom: 20px; white-space: pre-line; }
+        .modal-btns { display: flex; gap: 10px; justify-content: center; }
+        .modal-btn {
+            padding: 9px 24px;
+            border: none;
+            border-radius: 10px;
+            font-size: 14px;
+            font-weight: 600;
+            cursor: pointer;
+            font-family: inherit;
+            transition: all 0.15s;
+        }
+        .modal-btn-primary { background: linear-gradient(135deg, #2563eb, #1d4ed8); color: white; }
+        .modal-btn-primary:hover { box-shadow: 0 3px 10px rgba(37,99,235,0.4); }
+        .modal-btn-cancel { background: #e5e7eb; color: #374151; }
+        .modal-btn-cancel:hover { background: #d1d5db; }
+    </style>
+</head>
+<body>
+    <!-- Loading overlay (FIX 1) -->
+    <div class="loading-overlay" id="loadingOverlay">
+        <div class="loading-spinner"></div>
+        <div class="loading-text" id="loadingText">Consultando DEHÚ...</div>
+    </div>
+
+    <!-- Modal (FIX 2) -->
+    <div class="modal-backdrop" id="modalBackdrop">
+        <div class="modal-box">
+            <div class="modal-icon" id="modalIcon">⚠️</div>
+            <div class="modal-title" id="modalTitle"></div>
+            <div class="modal-msg" id="modalMsg"></div>
+            <div class="modal-btns" id="modalBtns"></div>
+        </div>
+    </div>
+
+    <!-- Header -->
+    <div class="header">
+        <div class="header-left">
+            <img src="https://cdn.prod.website-files.com/672b4b0a5cd7c3f57cb07f90/672cfc00f2a24cab5b4f7cef_logo-white.svg" alt="AiKit" class="logo">
+            <div class="divider"></div>
+            <span class="title">DESCARGADOR DEHÚ</span>
+        </div>
+        <div class="header-right">
+            <span class="user">{{ nombre }}</span>
+            <a href="/logout">🚪 Salir</a>
+        </div>
+    </div>
+
+    <div class="container">
+
+        <!-- Tabs -->
+        <div class="tabs">
+            <div class="tab active" data-tab="pendientes">📥 Pendientes</div>
+            <div class="tab" data-tab="realizadas">📋 Realizadas</div>
+        </div>
+
+        <div class="seccion">
+
+            <!-- ═══ TAB PENDIENTES ═══ -->
+            <div class="tab-content active" id="tab-pendientes">
+                <div class="toolbar">
+                    <button class="btn btn-primary" id="btnRefreshPend">🔄 Visualizar Dehú</button>
+                    <label style="font-size:13px; color:#555;">Desde: <span style="color:red">*</span>
+                        <input type="date" id="fechaDesdePend">
+                    </label>
+                    <label style="font-size:13px; color:#555;">Hasta: <span style="color:red">*</span>
+                        <input type="date" id="fechaHastaPend">
+                    </label>
+                    <input type="text" id="searchPend" placeholder="Buscar por empresa, NIF, código...">
+                    <select id="filterTipoPend">
+                        <option value="">Tipo envío: Todos</option>
+                        <option value="1">Comunicación</option>
+                        <option value="2">Notificación</option>
+                    </select>
+                </div>
+
+                <div class="cat-selector" id="catSelectorPend">
+                    <span class="cat-title">Seleccionar por categoría:</span>
+                    <label><input type="checkbox" class="cb-cat-pend" value="Concesión"> 📗 Concesión</label>
+                    <label><input type="checkbox" class="cb-cat-pend" value="Denegación"> 📕 Denegación</label>
+                    <label><input type="checkbox" class="cb-cat-pend" value="Subsanación" checked> 📙 Subsanación</label>
+                    <label><input type="checkbox" class="cb-cat-pend" value="Respuestas"> 📘 Respuestas</label>
+                    <label><input type="checkbox" class="cb-cat-pend" value="Administración"> 📓 Administración</label>
+                    <label><input type="checkbox" class="cb-cat-pend" value="Non-relevant"> ⬜ Non-relevant</label>
+                </div>
+
+                <div class="counter" id="counterPend">Cargue las notificaciones pendientes para empezar.</div>
+
+                <div class="table-container">
+                    <table><thead><tr>
+                        <th><input type="checkbox" id="selectAllPend" title="Seleccionar todo"></th>
+                        <th>Fecha</th><th>Código</th><th>Concepto</th><th>Empresa</th><th>NIF</th><th>Tipo</th>
+                    </tr></thead><tbody id="bodyPend"></tbody></table>
+                </div>
+
+                <div style="margin-top:20px; display:flex; gap:12px; align-items:center;">
+                    <button class="btn btn-primary" id="btnDescargarPend" disabled>
+                        📥 Descargar de DEHÚ (<span id="selectedCountPend">0</span>)
+                    </button>
+                    <span style="color:#666; font-size:12px;">⚠️ PeticionAcceso tiene validez jurídica</span>
+                </div>
+            </div>
+
+            <!-- ═══ TAB REALIZADAS ═══ -->
+            <div class="tab-content" id="tab-realizadas">
+                <div class="toolbar">
+                    <button class="btn btn-primary" id="btnRefreshReal">🔄 Visualizar Realizadas</button>
+                    <label style="font-size:13px; color:#555;">Desde: <span style="color:red">*</span>
+                        <input type="date" id="fechaDesdeReal">
+                    </label>
+                    <label style="font-size:13px; color:#555;">Hasta: <span style="color:red">*</span>
+                        <input type="date" id="fechaHastaReal">
+                    </label>
+                    <input type="text" id="searchReal" placeholder="Buscar por empresa, NIF, código...">
+                    <select id="filterTipoReal">
+                        <option value="">Tipo envío: Todos</option>
+                        <option value="1">Comunicación</option>
+                        <option value="2">Notificación</option>
+                    </select>
+                </div>
+
+                <div id="warning30Real" class="warning-30">
+                    💡 <strong>Nota:</strong> El servicio de <b>Realizadas</b> de DEHÚ solo permite consultar los <b>últimos 30 días</b>.
+                </div>
+
+                <div class="cat-selector" id="catSelectorReal">
+                    <span class="cat-title">Seleccionar por categoría:</span>
+                    <label><input type="checkbox" class="cb-cat-real" value="Concesión"> 📗 Concesión</label>
+                    <label><input type="checkbox" class="cb-cat-real" value="Denegación"> 📕 Denegación</label>
+                    <label><input type="checkbox" class="cb-cat-real" value="Subsanación" checked> 📙 Subsanación</label>
+                    <label><input type="checkbox" class="cb-cat-real" value="Respuestas"> 📘 Respuestas</label>
+                    <label><input type="checkbox" class="cb-cat-real" value="Administración"> 📓 Administración</label>
+                    <label><input type="checkbox" class="cb-cat-real" value="Non-relevant"> ⬜ Non-relevant</label>
+                </div>
+
+                <div class="counter" id="counterReal">Cargue las notificaciones realizadas para ver el historial.</div>
+
+                <div class="table-container">
+                    <table><thead><tr>
+                        <th><input type="checkbox" id="selectAllReal" title="Seleccionar todo"></th>
+                        <th>Fecha</th><th>Código</th><th>Concepto</th><th>Empresa</th><th>NIF</th><th>Estado</th>
+                    </tr></thead><tbody id="bodyReal"></tbody></table>
+                </div>
+
+                <div style="margin-top:20px; display:flex; gap:12px; align-items:center;">
+                    <button class="btn btn-primary" id="btnDescargarReal" disabled>
+                        📥 Descargar Realizadas (<span id="selectedCountReal">0</span>)
+                    </button>
+                    <span style="color:#666; font-size:12px;">ℹ️ Re-descarga notificaciones ya aceptadas</span>
+                </div>
+            </div>
+
+            <!-- ═══ PROGRESS PANEL ═══ -->
+            <div class="progress-panel" id="progressPanel">
+                <div class="progress-text" id="progressText">Preparando...</div>
+                <div class="progress-bar-wrap">
+                    <div class="progress-bar" id="progressBar"></div>
+                </div>
+                <div class="log-area" id="logArea"></div>
+            </div>
+
+            <!-- ═══ DOWNLOAD BANNER ═══ -->
+            <div class="download-banner" id="downloadBanner">
+                <div class="icon">✅</div>
+                <div style="font-weight:600; color:#065f46; font-size:15px;">Descarga completada</div>
+                <div style="color:#047857; font-size:13px; margin-top:4px;" id="downloadSummary"></div>
+                <a href="/api/dehu/descargar-zip" id="downloadLink">📦 Descargar ZIP</a>
+                <div style="margin-top:10px; font-size:12px; color:#6b7280;">
+                    Si no ha funcionado la descarga automática, <a href="/api/dehu/descargar-zip" style="color:#2563eb; text-decoration:underline;">haz clic aquí</a>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+    (function() {
+        // ══════════════════════════════════════════════════════
+        // LOADING OVERLAY (FIX 1)
+        // ══════════════════════════════════════════════════════
+        function showLoading(text) {
+            document.getElementById('loadingText').textContent = text || 'Consultando DEHÚ...';
+            document.getElementById('loadingOverlay').classList.add('active');
+        }
+        function hideLoading() {
+            document.getElementById('loadingOverlay').classList.remove('active');
+        }
+
+        // ══════════════════════════════════════════════════════
+        // HTML MODAL (FIX 2) — Reemplaza alert() y confirm()
+        // ══════════════════════════════════════════════════════
+        let _modalResolve = null;
+
+        function showAlert(msg, icon) {
+            return new Promise(resolve => {
+                const backdrop = document.getElementById('modalBackdrop');
+                document.getElementById('modalIcon').textContent = icon || 'ℹ️';
+                document.getElementById('modalTitle').textContent = '';
+                document.getElementById('modalMsg').textContent = msg;
+                document.getElementById('modalBtns').innerHTML =
+                    '<button class="modal-btn modal-btn-primary" id="modalOk">Aceptar</button>';
+                backdrop.classList.add('active');
+                document.getElementById('modalOk').onclick = () => {
+                    backdrop.classList.remove('active');
+                    resolve();
+                };
+            });
+        }
+
+        function showConfirm(title, msg, icon) {
+            return new Promise(resolve => {
+                const backdrop = document.getElementById('modalBackdrop');
+                document.getElementById('modalIcon').textContent = icon || '⚠️';
+                document.getElementById('modalTitle').textContent = title;
+                document.getElementById('modalMsg').textContent = msg;
+                document.getElementById('modalBtns').innerHTML =
+                    '<button class="modal-btn modal-btn-cancel" id="modalCancel">Cancelar</button>' +
+                    '<button class="modal-btn modal-btn-primary" id="modalConfirm">Confirmar</button>';
+                backdrop.classList.add('active');
+                document.getElementById('modalCancel').onclick = () => {
+                    backdrop.classList.remove('active');
+                    resolve(false);
+                };
+                document.getElementById('modalConfirm').onclick = () => {
+                    backdrop.classList.remove('active');
+                    resolve(true);
+                };
+            });
+        }
+
+        // ── Default dates ──
+        const today = new Date();
+        const ayer = new Date(today); ayer.setDate(ayer.getDate() - 1);
+        const hace30 = new Date(today); hace30.setDate(hace30.getDate() - 30);
+        const toISO = d => d.toISOString().split('T')[0];
+
+        document.getElementById('fechaDesdePend').value = toISO(hace30);
+        document.getElementById('fechaHastaPend').value = toISO(ayer);
+        document.getElementById('fechaDesdeReal').value = toISO(hace30);
+        document.getElementById('fechaHastaReal').value = toISO(ayer);
+
+        // ── Tab switching ──
+        document.querySelectorAll('.tab').forEach(tab => {
+            tab.addEventListener('click', () => {
+                document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+                document.querySelectorAll('.tab-content').forEach(c => c.classList.remove('active'));
+                tab.classList.add('active');
+                document.getElementById('tab-' + tab.dataset.tab).classList.add('active');
+            });
+        });
+
+        // ── Categorize by concepto text ──
+        function categorizeConcepto(concepto, nif) {
+            if (!concepto) return 'Non-relevant';
+            const parts = concepto.split(' - ');
+            const texto = parts.length > 1 ? parts.slice(1).join(' - ').trim() : concepto;
+            const t = texto.toLowerCase();
+            if (t.includes('resolución de concesión') || t.includes('resolucion de concesion')) return 'Concesión';
+            if (t.includes('resolución de desistidos') || t.includes('resolucion de desistidos')) return 'Denegación';
+            if (t.includes('resolución aceptación desistimiento') || t.includes('resolucion aceptacion desistimiento')) return 'Denegación';
+            if (t.startsWith('notificación de resolución') || t.startsWith('notificacion de resolucion')) return 'Denegación';
+            if (t.startsWith('adjuntamos respuesta')) return 'Respuestas';
+            if (t.startsWith('se adjunta respuesta a su comunicación') || t.startsWith('se adjunta respuesta a su comunicacion')) return 'Respuestas';
+            if (t.includes('requerimiento de subsanación') || t.includes('requerimiento de subsanacion')) return 'Subsanación';
+            if (t.startsWith('se adjunta requerimiento de documentación') || t.startsWith('se adjunta requerimiento de documentacion')) return 'Subsanación';
+            if (t.includes('notificación de subsanación') || t.includes('notificacion de subsanacion')) return 'Subsanación';
+            if (t.startsWith('notificación requerimiento de d') || t.startsWith('notificacion requerimiento de d')) return 'Subsanación';
+            if (t.includes('solicitud de aclaración') || t.includes('solicitud de aclaracion')) return 'Subsanación';
+            if (t.includes('comunicación de subsanación') || t.includes('comunicacion de subsanacion')) return 'Subsanación';
+            if (t.includes('gestión de acuerdos') || t.includes('gestion de acuerdos')) {
+                return (nif && nif.toUpperCase() === 'A56760267') ? 'Non-relevant' : 'Subsanación';
+            }
+            if (t.includes('notificación a.j.g') || t.includes('notificacion a.j.g')) return 'Administración';
+            return 'Non-relevant';
+        }
+
+        function extractCodigo(concepto) {
+            if (!concepto) return '';
+            const m = concepto.match(/^([A-Z0-9/_.-]+)\s*-/);
+            return m ? m[1].trim() : '';
+        }
+
+        function formatFecha(dateStr) {
+            if (!dateStr) return '';
+            try {
+                const d = new Date(dateStr);
+                return d.toLocaleDateString('es-ES', { day:'2-digit', month:'2-digit', year:'numeric', hour:'2-digit', minute:'2-digit' });
+            } catch { return dateStr; }
+        }
+
+        function tipoBadge(tipo) {
+            if (tipo === '1') return '<span class="badge badge-com">Comunicación</span>';
+            if (tipo === '2') return '<span class="badge badge-not">Notificación</span>';
+            return tipo || '';
+        }
+
+        // ══════════════════════════════════════════════════════
+        // PENDIENTES
+        // ══════════════════════════════════════════════════════
+        let pendientesData = [];
+        let pendFirstRender = true; // FIX 3: solo auto-select en primera carga
+
+        document.getElementById('btnRefreshPend').addEventListener('click', async () => {
+            const desde = document.getElementById('fechaDesdePend').value;
+            const hasta = document.getElementById('fechaHastaPend').value;
+            if (!desde || !hasta) { showAlert('Selecciona las fechas de consulta', '📅'); return; }
+
+            const counter = document.getElementById('counterPend');
+            counter.textContent = '📥 Consultando Pendientes DEHÚ...';
+            showLoading('Consultando notificaciones pendientes en DEHÚ...');
+
+            try {
+                const resp = await fetch(`/api/dehu/pendientes?fecha_desde=${desde}T00:00:00&fecha_hasta=${hasta}T23:59:59`);
+                const data = await resp.json();
+                hideLoading();
+                if (!data.exito) {
+                    counter.textContent = '❌ Error';
+                    showAlert(data.mensaje, '❌');
+                    return;
+                }
+                pendientesData = data.items || [];
+                addLog(`[INFO] ✅ ${pendientesData.length} pendientes encontradas`);
+                pendientesData.forEach(item => { item._cat = categorizeConcepto(item.concepto, item.titular_nifTitular); });
+                pendFirstRender = true; // nueva carga → aplicar categorías
+                renderPendientes();
+                counter.innerHTML = `<strong>${pendientesData.length}</strong> notificaciones pendientes`;
+            } catch (e) {
+                hideLoading();
+                counter.textContent = '❌ Error de conexión';
+                showAlert('Error de conexión con el servidor', '❌');
+            }
+        });
+
+        function renderPendientes() {
+            const body = document.getElementById('bodyPend');
+            const search = document.getElementById('searchPend').value.toLowerCase();
+            const tipoFilter = document.getElementById('filterTipoPend').value;
+
+            let filtered = pendientesData.filter(item => {
+                if (tipoFilter && item.tipoEnvio !== tipoFilter) return false;
+                if (search) {
+                    const h = [item.concepto, item.identificador, item.titular_nombreTitular, item.titular_nifTitular].join(' ').toLowerCase();
+                    if (!h.includes(search)) return false;
+                }
+                return true;
+            });
+
+            if (!filtered.length) {
+                body.innerHTML = '<tr><td colspan="7" class="empty-msg"><div class="empty-icon">📭</div>No hay notificaciones</td></tr>';
+                return;
+            }
+
+            body.innerHTML = filtered.map((item, idx) => `<tr data-cat="${item._cat}">
+                <td><input type="checkbox" class="cb-pend" data-ident="${item.identificador || idx}"></td>
+                <td>${formatFecha(item.fechaPuestaDisposicion)}</td>
+                <td><strong>${extractCodigo(item.concepto)}</strong></td>
+                <td class="concepto-cell" title="${(item.concepto||'').replace(/"/g,'&quot;')}">${item.concepto||''}</td>
+                <td>${item.titular_nombreTitular||''}</td>
+                <td>${item.titular_nifTitular||''}</td>
+                <td>${tipoBadge(item.tipoEnvio)}</td>
+            </tr>`).join('');
+
+            document.getElementById('catSelectorPend').style.display = 'block';
+            // FIX 3: solo auto-aplicar las categorías en la primera carga de datos
+            if (pendFirstRender) {
+                applyCatSelPend();
+                pendFirstRender = false;
+            } else {
+                updateCountPend();
+            }
+        }
+
+        function applyCatSelPend() {
+            const checked = Array.from(document.querySelectorAll('.cb-cat-pend:checked')).map(c => c.value);
+            document.querySelectorAll('.cb-pend').forEach(cb => {
+                const cat = cb.closest('tr')?.dataset.cat;
+                cb.checked = checked.length > 0 ? checked.includes(cat) : false;
+            });
+            updateCountPend();
+        }
+
+        function updateCountPend() {
+            const n = document.querySelectorAll('.cb-pend:checked').length;
+            document.getElementById('selectedCountPend').textContent = n;
+            document.getElementById('btnDescargarPend').disabled = n === 0;
+        }
+
+        document.querySelectorAll('.cb-cat-pend').forEach(cb => cb.addEventListener('change', applyCatSelPend));
+        document.getElementById('searchPend').addEventListener('input', renderPendientes);
+        document.getElementById('filterTipoPend').addEventListener('change', renderPendientes);
+        document.getElementById('selectAllPend').addEventListener('change', function() {
+            document.querySelectorAll('.cb-pend').forEach(cb => cb.checked = this.checked);
+            updateCountPend();
+        });
+        document.getElementById('bodyPend').addEventListener('change', e => {
+            if (e.target.classList.contains('cb-pend')) updateCountPend();
+        });
+
+        // ══════════════════════════════════════════════════════
+        // REALIZADAS
+        // ══════════════════════════════════════════════════════
+        let realizadasData = [];
+        let realFirstRender = true; // FIX 3
+
+        document.getElementById('btnRefreshReal').addEventListener('click', async () => {
+            const desde = document.getElementById('fechaDesdeReal').value;
+            const hasta = document.getElementById('fechaHastaReal').value;
+            if (!desde || !hasta) { showAlert('Selecciona las fechas de consulta', '📅'); return; }
+
+            // Avisar si > 30 días
+            const d1 = new Date(desde), d2 = new Date(hasta);
+            if ((d2 - d1) / 86400000 > 30) {
+                document.getElementById('warning30Real').style.display = 'block';
+            }
+
+            const counter = document.getElementById('counterReal');
+            counter.textContent = '📋 Consultando Realizadas DEHÚ...';
+            showLoading('Consultando notificaciones realizadas en DEHÚ...');
+
+            try {
+                const resp = await fetch(`/api/dehu/realizadas?fecha_desde=${desde}T00:00:00&fecha_hasta=${hasta}T23:59:59`);
+                const data = await resp.json();
+                hideLoading();
+                if (!data.exito) {
+                    counter.textContent = '❌ Error';
+                    showAlert(data.mensaje, '❌');
+                    return;
+                }
+                realizadasData = data.items || [];
+                addLog(`[INFO] ✅ ${realizadasData.length} realizadas encontradas`);
+                realizadasData.forEach(item => { item._cat = categorizeConcepto(item.concepto, item.titular_nifTitular); });
+                realFirstRender = true;
+                renderRealizadas();
+                counter.innerHTML = `<strong>${realizadasData.length}</strong> notificaciones realizadas`;
+            } catch (e) {
+                hideLoading();
+                counter.textContent = '❌ Error de conexión';
+                showAlert('Error de conexión con el servidor', '❌');
+            }
+        });
+
+        function renderRealizadas() {
+            const body = document.getElementById('bodyReal');
+            const search = document.getElementById('searchReal').value.toLowerCase();
+            const tipoFilter = document.getElementById('filterTipoReal').value;
+
+            let filtered = realizadasData.filter(item => {
+                if (tipoFilter && item.tipoEnvio !== tipoFilter) return false;
+                if (search) {
+                    const h = [item.concepto, item.identificador, item.titular_nombreTitular, item.titular_nifTitular].join(' ').toLowerCase();
+                    if (!h.includes(search)) return false;
+                }
+                return true;
+            });
+
+            if (!filtered.length) {
+                body.innerHTML = '<tr><td colspan="7" class="empty-msg"><div class="empty-icon">📭</div>No hay notificaciones</td></tr>';
+                return;
+            }
+
+            body.innerHTML = filtered.map((item, idx) => `<tr data-cat="${item._cat}">
+                <td><input type="checkbox" class="cb-real" data-ident="${item.identificador || idx}"></td>
+                <td>${formatFecha(item.fechaPuestaDisposicion || item.fechaNotificacion)}</td>
+                <td><strong>${extractCodigo(item.concepto)}</strong></td>
+                <td class="concepto-cell" title="${(item.concepto||'').replace(/"/g,'&quot;')}">${item.concepto||''}</td>
+                <td>${item.titular_nombreTitular||''}</td>
+                <td>${item.titular_nifTitular||''}</td>
+                <td>${item.estado || item.tipoAcceso || ''}</td>
+            </tr>`).join('');
+
+            document.getElementById('catSelectorReal').style.display = 'block';
+            // FIX 3
+            if (realFirstRender) {
+                applyCatSelReal();
+                realFirstRender = false;
+            } else {
+                updateCountReal();
+            }
+        }
+
+        function applyCatSelReal() {
+            const checked = Array.from(document.querySelectorAll('.cb-cat-real:checked')).map(c => c.value);
+            document.querySelectorAll('.cb-real').forEach(cb => {
+                const cat = cb.closest('tr')?.dataset.cat;
+                cb.checked = checked.length > 0 ? checked.includes(cat) : false;
+            });
+            updateCountReal();
+        }
+
+        function updateCountReal() {
+            const n = document.querySelectorAll('.cb-real:checked').length;
+            document.getElementById('selectedCountReal').textContent = n;
+            document.getElementById('btnDescargarReal').disabled = n === 0;
+        }
+
+        document.querySelectorAll('.cb-cat-real').forEach(cb => cb.addEventListener('change', applyCatSelReal));
+        document.getElementById('searchReal').addEventListener('input', renderRealizadas);
+        document.getElementById('filterTipoReal').addEventListener('change', renderRealizadas);
+        document.getElementById('selectAllReal').addEventListener('change', function() {
+            document.querySelectorAll('.cb-real').forEach(cb => cb.checked = this.checked);
+            updateCountReal();
+        });
+        document.getElementById('bodyReal').addEventListener('change', e => {
+            if (e.target.classList.contains('cb-real')) updateCountReal();
+        });
+
+        // ══════════════════════════════════════════════════════
+        // DESCARGA
+        // ══════════════════════════════════════════════════════
+
+        function getSelectedItems(data, cbClass) {
+            const checked = document.querySelectorAll(`.${cbClass}:checked`);
+            const selectedIds = new Set();
+            checked.forEach(cb => selectedIds.add(cb.dataset.ident));
+
+            // Return only data items whose identificador is in the checked set
+            return data.filter(item => selectedIds.has(item.identificador));
+        }
+
+        // Descargar Pendientes (FIX 2: usa showConfirm)
+        document.getElementById('btnDescargarPend').addEventListener('click', async () => {
+            const items = getSelectedItems(pendientesData, 'cb-pend');
+            if (!items.length) return;
+
+            const ok = await showConfirm(
+                `¿Descargar ${items.length} notificaciones?`,
+                `Se van a aceptar y descargar ${items.length} notificaciones de DEHÚ.\n\n⚠️ PeticionAcceso tiene validez jurídica.`,
+                '📥'
+            );
+            if (!ok) return;
+
+            showProgress();
+            try {
+                const resp = await fetch('/api/dehu/aceptar', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({ notificaciones: items }),
+                });
+                const data = await resp.json();
+                if (!data.exito) { addLog(`[ERROR] ${data.mensaje}`); return; }
+                startPolling();
+            } catch (e) { addLog(`[ERROR] ${e.message}`); }
+        });
+
+        // Descargar Realizadas
+        document.getElementById('btnDescargarReal').addEventListener('click', async () => {
+            const items = getSelectedItems(realizadasData, 'cb-real');
+            if (!items.length) return;
+
+            showProgress();
+            try {
+                const resp = await fetch('/api/dehu/descargar-realizadas', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({ notificaciones: items }),
+                });
+                const data = await resp.json();
+                if (!data.exito) { addLog(`[ERROR] ${data.mensaje}`); return; }
+                startPolling();
+            } catch (e) { addLog(`[ERROR] ${e.message}`); }
+        });
+
+        // ══════════════════════════════════════════════════════
+        // PROGRESS + POLLING
+        // ══════════════════════════════════════════════════════
+        let pollInterval = null;
+        let lastLogIdx = 0;
+
+        function showProgress() {
+            document.getElementById('progressPanel').style.display = 'block';
+            document.getElementById('downloadBanner').style.display = 'none';
+            document.getElementById('logArea').innerHTML = '';
+            document.getElementById('progressBar').style.width = '0%';
+            document.getElementById('progressText').textContent = 'Iniciando descarga...';
+            lastLogIdx = 0;
+        }
+
+        function addLog(msg) {
+            const area = document.getElementById('logArea');
+            let cls = 'log-info';
+            if (msg.includes('[OK]')) cls = 'log-ok';
+            else if (msg.includes('[ERROR]')) cls = 'log-err';
+            else if (msg.includes('[WARN]')) cls = 'log-warn';
+            area.innerHTML += `<div class="${cls}">${msg}</div>`;
+            area.scrollTop = area.scrollHeight;
+        }
+
+        function startPolling() {
+            if (pollInterval) clearInterval(pollInterval);
+            pollInterval = setInterval(async () => {
+                try {
+                    const resp = await fetch('/api/dehu/estado');
+                    const data = await resp.json();
+
+                    // New logs
+                    const logs = data.logs || [];
+                    for (let i = lastLogIdx; i < logs.length; i++) {
+                        addLog(logs[i]);
+                    }
+                    lastLogIdx = logs.length;
+
+                    // Progress bar
+                    if (data.progreso_total > 0) {
+                        const pct = Math.round((data.progreso_actual / data.progreso_total) * 100);
+                        document.getElementById('progressBar').style.width = pct + '%';
+                        document.getElementById('progressText').textContent =
+                            `Procesando ${data.progreso_actual}/${data.progreso_total} (${pct}%)`;
+                    }
+
+                    // Done
+                    if (!data.procesando && data.resultado) {
+                        clearInterval(pollInterval);
+                        pollInterval = null;
+                        const r = data.resultado;
+                        document.getElementById('progressBar').style.width = '100%';
+                        document.getElementById('progressText').textContent =
+                            `✅ Completado: ${r.descargados} descargados, ${r.errores} errores`;
+
+                        if (data.zip_listo) {
+                            document.getElementById('downloadBanner').style.display = 'block';
+                            document.getElementById('downloadSummary').textContent =
+                                `${r.descargados} archivos descargados`;
+                            // Auto-download
+                            setTimeout(() => {
+                                window.location.href = '/api/dehu/descargar-zip';
+                            }, 1000);
+                        }
+                    }
+                } catch (e) {
+                    console.error('Poll error:', e);
+                }
+            }, 1500);
+        }
+
+    })();
+    </script>
+</body>
+</html>

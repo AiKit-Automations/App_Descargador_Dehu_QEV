@@ -1,0 +1,245 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Login — Descargador DEHÚ</title>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            font-family: 'Inter', -apple-system, sans-serif;
+            background: linear-gradient(135deg, #0f172a 0%, #1e293b 50%, #0f172a 100%);
+            min-height: 100vh;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+        .login-card {
+            background: white;
+            border-radius: 20px;
+            padding: 48px 40px;
+            width: 90%;
+            max-width: 440px;
+            box-shadow: 0 25px 60px rgba(0,0,0,0.3);
+        }
+        .login-header {
+            text-align: center;
+            margin-bottom: 32px;
+        }
+        .login-header img {
+            height: 32px;
+            margin-bottom: 16px;
+        }
+        .login-header h1 {
+            font-size: 22px;
+            font-weight: 700;
+            color: #1e293b;
+            margin-bottom: 4px;
+        }
+        .login-header p {
+            color: #64748b;
+            font-size: 14px;
+        }
+        .dropzone {
+            border: 2px dashed #93c5fd;
+            border-radius: 16px;
+            padding: 32px 20px;
+            text-align: center;
+            cursor: pointer;
+            background: #eff6ff;
+            transition: all 0.2s;
+            margin-bottom: 20px;
+        }
+        .dropzone:hover, .dropzone.drag-over {
+            border-color: #3b82f6;
+            background: #dbeafe;
+        }
+        .dropzone .icon { font-size: 40px; margin-bottom: 8px; }
+        .dropzone .text { color: #1e40af; font-weight: 600; font-size: 15px; }
+        .dropzone .hint { color: #6b7280; font-size: 12px; margin-top: 4px; }
+        .file-selected {
+            display: none;
+            background: #f0fdf4;
+            border: 1px solid #86efac;
+            border-radius: 10px;
+            padding: 12px 16px;
+            margin-bottom: 16px;
+            font-size: 13px;
+            color: #166534;
+        }
+        .file-selected .name { font-weight: 600; }
+        .pwd-group {
+            margin-bottom: 20px;
+        }
+        .pwd-group label {
+            display: block;
+            font-size: 13px;
+            font-weight: 600;
+            color: #374151;
+            margin-bottom: 6px;
+        }
+        .pwd-group input {
+            width: 100%;
+            padding: 10px 14px;
+            border: 1.5px solid #d1d5db;
+            border-radius: 10px;
+            font-size: 14px;
+            font-family: inherit;
+            transition: border-color 0.2s;
+        }
+        .pwd-group input:focus {
+            outline: none;
+            border-color: #3b82f6;
+            box-shadow: 0 0 0 3px rgba(59,130,246,0.15);
+        }
+        .btn-login {
+            width: 100%;
+            padding: 12px;
+            background: linear-gradient(135deg, #2563eb, #1d4ed8);
+            color: white;
+            border: none;
+            border-radius: 12px;
+            font-size: 15px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.2s;
+            font-family: inherit;
+        }
+        .btn-login:hover:not(:disabled) {
+            transform: translateY(-1px);
+            box-shadow: 0 4px 12px rgba(37,99,235,0.4);
+        }
+        .btn-login:disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
+        }
+        .error-msg {
+            display: none;
+            background: #fef2f2;
+            border: 1px solid #fca5a5;
+            border-radius: 10px;
+            padding: 10px 14px;
+            color: #991b1b;
+            font-size: 13px;
+            margin-top: 12px;
+        }
+        .spinner {
+            display: none;
+            width: 20px; height: 20px;
+            border: 3px solid #e5e7eb;
+            border-top-color: white;
+            border-radius: 50%;
+            animation: spin 0.8s linear infinite;
+            margin: 0 auto;
+        }
+        @keyframes spin { to { transform: rotate(360deg); } }
+    </style>
+</head>
+<body>
+    <div class="login-card">
+        <div class="login-header">
+            <img src="https://cdn.prod.website-files.com/672b4b0a5cd7c3f57cb07f90/672cfc00f2a24cab5b4f7cef_logo-white.svg"
+                 alt="AiKit" style="filter: brightness(0);">
+            <h1>Descargador DEHÚ</h1>
+            <p>Inicia sesión con tu certificado electrónico</p>
+        </div>
+
+        <div id="dropzone" class="dropzone">
+            <div class="icon">🔐</div>
+            <div class="text">Arrastra tu archivo <strong>.pfx</strong> aquí</div>
+            <div class="hint">o haz clic para seleccionar</div>
+        </div>
+        <input type="file" id="fileInput" accept=".pfx,.p12" style="display:none">
+
+        <div id="fileSelected" class="file-selected">
+            ✅ <span class="name" id="fileName"></span>
+        </div>
+
+        <div class="pwd-group">
+            <label for="password">Contraseña del certificado</label>
+            <input type="password" id="password" placeholder="Introduce la contraseña">
+        </div>
+
+        <button id="btnLogin" class="btn-login" disabled>
+            <span id="btnText">Iniciar Sesión</span>
+            <div id="btnSpinner" class="spinner"></div>
+        </button>
+
+        <div id="errorMsg" class="error-msg"></div>
+    </div>
+
+    <script>
+        const dropzone = document.getElementById('dropzone');
+        const fileInput = document.getElementById('fileInput');
+        const fileSelected = document.getElementById('fileSelected');
+        const fileName = document.getElementById('fileName');
+        const btnLogin = document.getElementById('btnLogin');
+        const password = document.getElementById('password');
+
+        let selectedFile = null;
+
+        dropzone.addEventListener('click', () => fileInput.click());
+        dropzone.addEventListener('dragover', e => { e.preventDefault(); dropzone.classList.add('drag-over'); });
+        dropzone.addEventListener('dragleave', () => dropzone.classList.remove('drag-over'));
+        dropzone.addEventListener('drop', e => {
+            e.preventDefault();
+            dropzone.classList.remove('drag-over');
+            if (e.dataTransfer.files.length) selectFile(e.dataTransfer.files[0]);
+        });
+        fileInput.addEventListener('change', e => { if (e.target.files.length) selectFile(e.target.files[0]); });
+
+        function selectFile(file) {
+            const ext = file.name.split('.').pop().toLowerCase();
+            if (!['pfx', 'p12'].includes(ext)) {
+                showError('Solo se aceptan archivos .pfx o .p12');
+                return;
+            }
+            selectedFile = file;
+            fileName.textContent = file.name;
+            fileSelected.style.display = 'block';
+            dropzone.style.display = 'none';
+            btnLogin.disabled = false;
+        }
+
+        function showError(msg) {
+            const el = document.getElementById('errorMsg');
+            el.textContent = msg;
+            el.style.display = 'block';
+        }
+
+        btnLogin.addEventListener('click', async () => {
+            if (!selectedFile) return;
+            const el = document.getElementById('errorMsg');
+            el.style.display = 'none';
+            document.getElementById('btnText').style.display = 'none';
+            document.getElementById('btnSpinner').style.display = 'block';
+            btnLogin.disabled = true;
+
+            const form = new FormData();
+            form.append('file', selectedFile);
+            form.append('password', password.value);
+
+            try {
+                const resp = await fetch('/login', { method: 'POST', body: form });
+                const data = await resp.json();
+                if (data.exito) {
+                    window.location.href = '/';
+                } else {
+                    showError(data.mensaje || 'Error desconocido');
+                    document.getElementById('btnText').style.display = '';
+                    document.getElementById('btnSpinner').style.display = 'none';
+                    btnLogin.disabled = false;
+                }
+            } catch (e) {
+                showError('Error de conexión');
+                document.getElementById('btnText').style.display = '';
+                document.getElementById('btnSpinner').style.display = 'none';
+                btnLogin.disabled = false;
+            }
+        });
+
+        password.addEventListener('keydown', e => { if (e.key === 'Enter') btnLogin.click(); });
+    </script>
+</body>
+</html>
