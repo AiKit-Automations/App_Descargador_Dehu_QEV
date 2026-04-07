@@ -108,6 +108,20 @@
         .badge-com { background: #dbeafe; color: #1e40af; }
         .badge-not { background: #fef3c7; color: #92400e; }
 
+        /* ── Limit warning ── */
+        .limit-warning {
+            display: none;
+            background: #fff7ed;
+            border: 1px solid #fed7aa;
+            border-radius: 8px;
+            padding: 8px 14px;
+            font-size: 12px;
+            color: #9a3412;
+            margin-bottom: 10px;
+            font-weight: 500;
+        }
+        .limit-warning.active { display: block; }
+
         /* ── Category selector ── */
         .cat-selector {
             display: none;
@@ -332,15 +346,12 @@
                 </div>
 
                 <div class="cat-selector" id="catSelectorPend">
-                    <span class="cat-title">Seleccionar por categoría:</span>
-                    <label><input type="checkbox" class="cb-cat-pend" value="Concesión"> 📗 Concesión</label>
-                    <label><input type="checkbox" class="cb-cat-pend" value="Denegación"> 📕 Denegación</label>
-                    <label><input type="checkbox" class="cb-cat-pend" value="Subsanación" checked> 📙 Subsanación</label>
-                    <label><input type="checkbox" class="cb-cat-pend" value="Respuestas"> 📘 Respuestas</label>
-                    <label><input type="checkbox" class="cb-cat-pend" value="Administración"> 📓 Administración</label>
-                    <label><input type="checkbox" class="cb-cat-pend" value="Non-relevant"> ⬜ Non-relevant</label>
+                    <span class="cat-title">Filtro:</span>
+                    <label><input type="checkbox" class="cb-cat-pend" value="redes" checked> 🟦 Red.es</label>
+                    <label><input type="checkbox" class="cb-cat-pend" value="otros"> ⬜ Otros</label>
                 </div>
 
+                <div class="limit-warning" id="limitWarningPend"></div>
                 <div class="counter" id="counterPend">Cargue las notificaciones pendientes para empezar.</div>
 
                 <div class="table-container">
@@ -381,15 +392,12 @@
                 </div>
 
                 <div class="cat-selector" id="catSelectorReal">
-                    <span class="cat-title">Seleccionar por categoría:</span>
-                    <label><input type="checkbox" class="cb-cat-real" value="Concesión"> 📗 Concesión</label>
-                    <label><input type="checkbox" class="cb-cat-real" value="Denegación"> 📕 Denegación</label>
-                    <label><input type="checkbox" class="cb-cat-real" value="Subsanación" checked> 📙 Subsanación</label>
-                    <label><input type="checkbox" class="cb-cat-real" value="Respuestas"> 📘 Respuestas</label>
-                    <label><input type="checkbox" class="cb-cat-real" value="Administración"> 📓 Administración</label>
-                    <label><input type="checkbox" class="cb-cat-real" value="Non-relevant"> ⬜ Non-relevant</label>
+                    <span class="cat-title">Filtro:</span>
+                    <label><input type="checkbox" class="cb-cat-real" value="redes" checked> 🟦 Red.es</label>
+                    <label><input type="checkbox" class="cb-cat-real" value="otros"> ⬜ Otros</label>
                 </div>
 
+                <div class="limit-warning" id="limitWarningReal"></div>
                 <div class="counter" id="counterReal">Cargue las notificaciones realizadas para ver el historial.</div>
 
                 <div class="table-container">
@@ -431,6 +439,8 @@
 
     <script>
     (function() {
+        const MAX_DOWNLOAD = 998;
+
         // ══════════════════════════════════════════════════════
         // LOADING OVERLAY (FIX 1)
         // ══════════════════════════════════════════════════════
@@ -505,29 +515,11 @@
             });
         });
 
-        // ── Categorize by concepto text ──
-        function categorizeConcepto(concepto, nif) {
-            if (!concepto) return 'Non-relevant';
-            const parts = concepto.split(' - ');
-            const texto = parts.length > 1 ? parts.slice(1).join(' - ').trim() : concepto;
-            const t = texto.toLowerCase();
-            if (t.includes('resolución de concesión') || t.includes('resolucion de concesion')) return 'Concesión';
-            if (t.includes('resolución de desistidos') || t.includes('resolucion de desistidos')) return 'Denegación';
-            if (t.includes('resolución aceptación desistimiento') || t.includes('resolucion aceptacion desistimiento')) return 'Denegación';
-            if (t.startsWith('notificación de resolución') || t.startsWith('notificacion de resolucion')) return 'Denegación';
-            if (t.startsWith('adjuntamos respuesta')) return 'Respuestas';
-            if (t.startsWith('se adjunta respuesta a su comunicación') || t.startsWith('se adjunta respuesta a su comunicacion')) return 'Respuestas';
-            if (t.includes('requerimiento de subsanación') || t.includes('requerimiento de subsanacion')) return 'Subsanación';
-            if (t.startsWith('se adjunta requerimiento de documentación') || t.startsWith('se adjunta requerimiento de documentacion')) return 'Subsanación';
-            if (t.includes('notificación de subsanación') || t.includes('notificacion de subsanacion')) return 'Subsanación';
-            if (t.startsWith('notificación requerimiento de d') || t.startsWith('notificacion requerimiento de d')) return 'Subsanación';
-            if (t.includes('solicitud de aclaración') || t.includes('solicitud de aclaracion')) return 'Subsanación';
-            if (t.includes('comunicación de subsanación') || t.includes('comunicacion de subsanacion')) return 'Subsanación';
-            if (t.includes('gestión de acuerdos') || t.includes('gestion de acuerdos')) {
-                return (nif && nif.toUpperCase() === 'A56760267') ? 'Non-relevant' : 'Subsanación';
-            }
-            if (t.includes('notificación a.j.g') || t.includes('notificacion a.j.g')) return 'Administración';
-            return 'Non-relevant';
+        // ── Detect Red.es by organismo emisor ──
+        function isRedEs(item) {
+            const cod = item.organismoEmisor_codigoOrganismo || '';
+            const nombre = (item.organismoEmisor_nombreOrganismo || '').toLowerCase();
+            return cod === 'EA0044367' || nombre.includes('red.es');
         }
 
         function extractCodigo(concepto) {
@@ -576,7 +568,7 @@
                 }
                 pendientesData = data.items || [];
                 addLog(`[INFO] ✅ ${pendientesData.length} pendientes encontradas`);
-                pendientesData.forEach(item => { item._cat = categorizeConcepto(item.concepto, item.titular_nifTitular); });
+                pendientesData.forEach(item => { item._isRedEs = isRedEs(item); });
                 pendFirstRender = true; // nueva carga → aplicar categorías
                 renderPendientes();
                 counter.innerHTML = `<strong>${pendientesData.length}</strong> notificaciones pendientes`;
@@ -606,7 +598,7 @@
                 return;
             }
 
-            body.innerHTML = filtered.map((item, idx) => `<tr data-cat="${item._cat}">
+            body.innerHTML = filtered.map((item, idx) => `<tr data-redes="${item._isRedEs ? '1' : '0'}">
                 <td><input type="checkbox" class="cb-pend" data-ident="${item.identificador || idx}"></td>
                 <td>${formatFecha(item.fechaPuestaDisposicion)}</td>
                 <td><strong>${extractCodigo(item.concepto)}</strong></td>
@@ -628,28 +620,73 @@
 
         function applyCatSelPend() {
             const checked = Array.from(document.querySelectorAll('.cb-cat-pend:checked')).map(c => c.value);
-            document.querySelectorAll('.cb-pend').forEach(cb => {
-                const cat = cb.closest('tr')?.dataset.cat;
-                cb.checked = checked.length > 0 ? checked.includes(cat) : false;
-            });
+            const wantRedEs = checked.includes('redes');
+            const wantOtros = checked.includes('otros');
+            // Uncheck all first
+            document.querySelectorAll('.cb-pend').forEach(cb => cb.checked = false);
+            // Collect candidates: Red.es first (priority), then Otros
+            const allCbs = Array.from(document.querySelectorAll('.cb-pend'));
+            const redesCbs = allCbs.filter(cb => cb.closest('tr')?.dataset.redes === '1');
+            const otrosCbs = allCbs.filter(cb => cb.closest('tr')?.dataset.redes !== '1');
+            let count = 0;
+            if (wantRedEs) {
+                for (const cb of redesCbs) {
+                    if (count >= MAX_DOWNLOAD) break;
+                    cb.checked = true;
+                    count++;
+                }
+            }
+            if (wantOtros) {
+                for (const cb of otrosCbs) {
+                    if (count >= MAX_DOWNLOAD) break;
+                    cb.checked = true;
+                    count++;
+                }
+            }
             updateCountPend();
         }
 
         function updateCountPend() {
+            const total = document.querySelectorAll('.cb-pend').length;
             const n = document.querySelectorAll('.cb-pend:checked').length;
             document.getElementById('selectedCountPend').textContent = n;
             document.getElementById('btnDescargarPend').disabled = n === 0;
+            // Limit warning
+            const warn = document.getElementById('limitWarningPend');
+            if (n >= MAX_DOWNLOAD && total > MAX_DOWNLOAD) {
+                warn.textContent = `⚠️ Se han seleccionado ${n} de ${total} — límite máximo de ${MAX_DOWNLOAD} alcanzado`;
+                warn.classList.add('active');
+            } else {
+                warn.classList.remove('active');
+            }
         }
 
         document.querySelectorAll('.cb-cat-pend').forEach(cb => cb.addEventListener('change', applyCatSelPend));
         document.getElementById('searchPend').addEventListener('input', renderPendientes);
         document.getElementById('filterTipoPend').addEventListener('change', renderPendientes);
         document.getElementById('selectAllPend').addEventListener('change', function() {
-            document.querySelectorAll('.cb-pend').forEach(cb => cb.checked = this.checked);
+            const allCbs = Array.from(document.querySelectorAll('.cb-pend'));
+            if (this.checked) {
+                // Uncheck all first, then check up to MAX with Red.es priority
+                allCbs.forEach(cb => cb.checked = false);
+                const redesCbs = allCbs.filter(cb => cb.closest('tr')?.dataset.redes === '1');
+                const otrosCbs = allCbs.filter(cb => cb.closest('tr')?.dataset.redes !== '1');
+                let count = 0;
+                for (const cb of redesCbs) { if (count >= MAX_DOWNLOAD) break; cb.checked = true; count++; }
+                for (const cb of otrosCbs) { if (count >= MAX_DOWNLOAD) break; cb.checked = true; count++; }
+            } else {
+                allCbs.forEach(cb => cb.checked = false);
+            }
             updateCountPend();
         });
         document.getElementById('bodyPend').addEventListener('change', e => {
-            if (e.target.classList.contains('cb-pend')) updateCountPend();
+            if (e.target.classList.contains('cb-pend')) {
+                const n = document.querySelectorAll('.cb-pend:checked').length;
+                if (n > MAX_DOWNLOAD) {
+                    e.target.checked = false;
+                }
+                updateCountPend();
+            }
         });
 
         // ══════════════════════════════════════════════════════
@@ -684,7 +721,7 @@
                 }
                 realizadasData = data.items || [];
                 addLog(`[INFO] ✅ ${realizadasData.length} realizadas encontradas`);
-                realizadasData.forEach(item => { item._cat = categorizeConcepto(item.concepto, item.titular_nifTitular); });
+                realizadasData.forEach(item => { item._isRedEs = isRedEs(item); });
                 realFirstRender = true;
                 renderRealizadas();
                 counter.innerHTML = `<strong>${realizadasData.length}</strong> notificaciones realizadas`;
@@ -714,7 +751,7 @@
                 return;
             }
 
-            body.innerHTML = filtered.map((item, idx) => `<tr data-cat="${item._cat}">
+            body.innerHTML = filtered.map((item, idx) => `<tr data-redes="${item._isRedEs ? '1' : '0'}">
                 <td><input type="checkbox" class="cb-real" data-ident="${item.identificador || idx}"></td>
                 <td>${formatFecha(item.fechaPuestaDisposicion || item.fechaNotificacion)}</td>
                 <td><strong>${extractCodigo(item.concepto)}</strong></td>
@@ -736,28 +773,72 @@
 
         function applyCatSelReal() {
             const checked = Array.from(document.querySelectorAll('.cb-cat-real:checked')).map(c => c.value);
-            document.querySelectorAll('.cb-real').forEach(cb => {
-                const cat = cb.closest('tr')?.dataset.cat;
-                cb.checked = checked.length > 0 ? checked.includes(cat) : false;
-            });
+            const wantRedEs = checked.includes('redes');
+            const wantOtros = checked.includes('otros');
+            // Uncheck all first
+            document.querySelectorAll('.cb-real').forEach(cb => cb.checked = false);
+            // Collect candidates: Red.es first (priority), then Otros
+            const allCbs = Array.from(document.querySelectorAll('.cb-real'));
+            const redesCbs = allCbs.filter(cb => cb.closest('tr')?.dataset.redes === '1');
+            const otrosCbs = allCbs.filter(cb => cb.closest('tr')?.dataset.redes !== '1');
+            let count = 0;
+            if (wantRedEs) {
+                for (const cb of redesCbs) {
+                    if (count >= MAX_DOWNLOAD) break;
+                    cb.checked = true;
+                    count++;
+                }
+            }
+            if (wantOtros) {
+                for (const cb of otrosCbs) {
+                    if (count >= MAX_DOWNLOAD) break;
+                    cb.checked = true;
+                    count++;
+                }
+            }
             updateCountReal();
         }
 
         function updateCountReal() {
+            const total = document.querySelectorAll('.cb-real').length;
             const n = document.querySelectorAll('.cb-real:checked').length;
             document.getElementById('selectedCountReal').textContent = n;
             document.getElementById('btnDescargarReal').disabled = n === 0;
+            // Limit warning
+            const warn = document.getElementById('limitWarningReal');
+            if (n >= MAX_DOWNLOAD && total > MAX_DOWNLOAD) {
+                warn.textContent = `⚠️ Se han seleccionado ${n} de ${total} — límite máximo de ${MAX_DOWNLOAD} alcanzado`;
+                warn.classList.add('active');
+            } else {
+                warn.classList.remove('active');
+            }
         }
 
         document.querySelectorAll('.cb-cat-real').forEach(cb => cb.addEventListener('change', applyCatSelReal));
         document.getElementById('searchReal').addEventListener('input', renderRealizadas);
         document.getElementById('filterTipoReal').addEventListener('change', renderRealizadas);
         document.getElementById('selectAllReal').addEventListener('change', function() {
-            document.querySelectorAll('.cb-real').forEach(cb => cb.checked = this.checked);
+            const allCbs = Array.from(document.querySelectorAll('.cb-real'));
+            if (this.checked) {
+                allCbs.forEach(cb => cb.checked = false);
+                const redesCbs = allCbs.filter(cb => cb.closest('tr')?.dataset.redes === '1');
+                const otrosCbs = allCbs.filter(cb => cb.closest('tr')?.dataset.redes !== '1');
+                let count = 0;
+                for (const cb of redesCbs) { if (count >= MAX_DOWNLOAD) break; cb.checked = true; count++; }
+                for (const cb of otrosCbs) { if (count >= MAX_DOWNLOAD) break; cb.checked = true; count++; }
+            } else {
+                allCbs.forEach(cb => cb.checked = false);
+            }
             updateCountReal();
         });
         document.getElementById('bodyReal').addEventListener('change', e => {
-            if (e.target.classList.contains('cb-real')) updateCountReal();
+            if (e.target.classList.contains('cb-real')) {
+                const n = document.querySelectorAll('.cb-real:checked').length;
+                if (n > MAX_DOWNLOAD) {
+                    e.target.checked = false;
+                }
+                updateCountReal();
+            }
         });
 
         // ══════════════════════════════════════════════════════

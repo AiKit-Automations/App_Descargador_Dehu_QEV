@@ -37,6 +37,15 @@ app = Flask(__name__,
             static_folder=os.path.join(BUNDLE_DIR, 'static'))
 app.secret_key = os.environ.get('SECRET_KEY', 'dehu-lite-secret-' + uuid.uuid4().hex[:8])
 app.config['PERMANENT_SESSION_LIFETIME'] = 86400 * 7  # 7 días
+app.config['TEMPLATES_AUTO_RELOAD'] = True
+app.config['SEND_FILE_MAX_AGE_DEFAULT'] = 0
+
+@app.after_request
+def add_no_cache_headers(response):
+    response.headers['Cache-Control'] = 'no-store, no-cache, must-revalidate, max-age=0'
+    response.headers['Pragma'] = 'no-cache'
+    response.headers['Expires'] = '0'
+    return response
 
 DEHU_CONFIG_PATH = os.path.join(EXECUTABLE_DIR, 'dehu_config.json')
 OUTPUTS_DIR = os.path.join(EXECUTABLE_DIR, 'outputs')
@@ -54,6 +63,9 @@ dehu_estado = {
     'zip_path': '',
 }
 dehu_lock = threading.Lock()
+
+# Límite máximo de notificaciones por descarga (restricción de DEHÚ)
+MAX_DOWNLOAD_LIMIT = 998
 
 
 # ══════════════════════════════════════════════════════════════════
@@ -547,6 +559,11 @@ def dehu_aceptar():
         if not notificaciones:
             return jsonify({'exito': False, 'mensaje': 'No se seleccionaron notificaciones'}), 400
 
+        # Safety net: truncar a MAX_DOWNLOAD_LIMIT
+        if len(notificaciones) > MAX_DOWNLOAD_LIMIT:
+            print(f"[WARN] Se recibieron {len(notificaciones)} notificaciones, truncando a {MAX_DOWNLOAD_LIMIT}")
+            notificaciones = notificaciones[:MAX_DOWNLOAD_LIMIT]
+
         with dehu_lock:
             if dehu_estado['procesando']:
                 return jsonify({'exito': False, 'mensaje': 'Ya hay un proceso en ejecución'}), 400
@@ -578,6 +595,11 @@ def dehu_descargar_realizadas():
         notificaciones = data.get('notificaciones', [])
         if not notificaciones:
             return jsonify({'exito': False, 'mensaje': 'No se seleccionaron notificaciones'}), 400
+
+        # Safety net: truncar a MAX_DOWNLOAD_LIMIT
+        if len(notificaciones) > MAX_DOWNLOAD_LIMIT:
+            print(f"[WARN] Se recibieron {len(notificaciones)} realizadas, truncando a {MAX_DOWNLOAD_LIMIT}")
+            notificaciones = notificaciones[:MAX_DOWNLOAD_LIMIT]
 
         with dehu_lock:
             if dehu_estado['procesando']:
