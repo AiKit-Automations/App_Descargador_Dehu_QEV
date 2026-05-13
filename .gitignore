@@ -1,6 +1,5 @@
 __pycache__/
 *.pyc
-dist/
 build/
 *.spec
 outputs/
@@ -8,3 +7,4 @@ certs/
 *.egg-info/
 .venv/
 venv/
+dist/outputs/
