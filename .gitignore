@@ -6,3 +6,5 @@ build/
 outputs/
 certs/
 *.egg-info/
+.venv/
+venv/
