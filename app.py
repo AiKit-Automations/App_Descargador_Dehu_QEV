@@ -300,6 +300,48 @@ def _limpiar_descargas():
     return dehu_dir
 
 
+def _construir_meta(notif):
+    """Construye el dict de metadata DEHÚ a partir del notif del listado."""
+    meta = {
+        'identificador': notif.get('identificador', ''),
+        'codigoOrigen': notif.get('codigoOrigen', ''),
+        'concepto': notif.get('concepto', ''),
+        'fechaPuestaDisposicion': notif.get('fechaPuestaDisposicion', ''),
+    }
+    for opt_key in ('tipoEnvio', 'organismoEmisor_codigoOrganismo', 'organismoEmisor_nombreOrganismo'):
+        val = notif.get(opt_key)
+        if val:
+            meta[opt_key] = val
+    return meta
+
+
+def _anadir_meta_a_zip(zip_path: str, meta: dict) -> None:
+    """Añade meta.json a la raíz de un ZIP existente sin recomprimir el resto.
+
+    Usa modo append: zipfile solo añade el archivo al final del ZIP,
+    sin reescribir la estructura existente. Idempotente: si ya existe
+    meta.json en el ZIP, no se duplica.
+
+    Si por cualquier motivo (ZIP corrupto, permisos, disco, etc.) no se
+    puede inyectar el meta, se loguea WARN pero NO se propaga la
+    excepción. El binario del ZIP ya está escrito y la notificación se
+    considera descargada correctamente — meta.json es una mejora, no un
+    requisito.
+    """
+    import json
+    if not os.path.isfile(zip_path):
+        return
+    try:
+        with zipfile.ZipFile(zip_path, 'a', zipfile.ZIP_DEFLATED) as zf:
+            if 'meta.json' in zf.namelist():
+                return  # ya tiene meta — re-ejecución segura
+            meta_bytes = json.dumps(meta, ensure_ascii=False, indent=2).encode('utf-8')
+            zf.writestr('meta.json', meta_bytes)
+        _dehu_log(f'[OK] meta.json añadido a {os.path.basename(zip_path)}')
+    except Exception as e:
+        _dehu_log(f'[WARN] No se pudo añadir meta a {os.path.basename(zip_path)}: {e}')
+
+
 def _generar_zip_consolidado(dehu_dir):
     """Crea un ZIP con todos los archivos descargados."""
     fecha = datetime.now().strftime('%Y%m%d_%H%M')
@@ -310,7 +352,7 @@ def _generar_zip_consolidado(dehu_dir):
     with zipfile.ZipFile(zip_path, 'w', zipfile.ZIP_DEFLATED) as zf:
         for f in os.listdir(dehu_dir):
             fpath = os.path.join(dehu_dir, f)
-            if os.path.isfile(fpath) and f != 'dehu_metadata.json':
+            if os.path.isfile(fpath):
                 zf.write(fpath, f)
                 total += 1
 
@@ -406,16 +448,23 @@ def ejecutar_descarga_pendientes(notificaciones, cert_context):
                         f.write(result['documento_bytes'])
                     _dehu_log(f'[OK] [{ident}] Descargado: {doc_name} ({len(result["documento_bytes"]):,} bytes)')
 
-                    # Extraer ZIPs internos
+                    meta = _construir_meta(notif)
+                    meta['concepto'] = concepto
+
                     if doc_name.endswith('.zip'):
                         try:
                             with zipfile.ZipFile(doc_path, 'r') as zf:
                                 inner_files = zf.namelist()
-                                has_inner_zips = any(f.endswith('.zip') for f in inner_files)
+                                has_inner_zips = any(inner_f.endswith('.zip') for inner_f in inner_files)
                                 if has_inner_zips:
                                     zf.extractall(dehu_dir)
                                     os.remove(doc_path)
                                     _dehu_log(f'[INFO] Extraídos {len(inner_files)} ficheros del ZIP contenedor')
+                                    for inner_f in inner_files:
+                                        if inner_f.endswith('.zip'):
+                                            _anadir_meta_a_zip(os.path.join(dehu_dir, inner_f), meta)
+                                else:
+                                    _anadir_meta_a_zip(doc_path, meta)
                         except zipfile.BadZipFile:
                             _dehu_log(f'[WARN] {doc_name} no es un ZIP válido, se mantiene como está')
 
@@ -497,16 +546,23 @@ def ejecutar_descarga_realizadas(notificaciones, cert_context):
                         f.write(result['documento_bytes'])
                     _dehu_log(f'[OK] [{ident}] Descargado: {doc_name} ({len(result["documento_bytes"]):,} bytes)')
 
-                    # Extraer ZIPs internos
+                    meta = _construir_meta(notif)
+                    meta['concepto'] = concepto
+
                     if doc_name.endswith('.zip'):
                         try:
                             with zipfile.ZipFile(doc_path, 'r') as zf:
                                 inner_files = zf.namelist()
-                                has_inner_zips = any(f.endswith('.zip') for f in inner_files)
+                                has_inner_zips = any(inner_f.endswith('.zip') for inner_f in inner_files)
                                 if has_inner_zips:
                                     zf.extractall(dehu_dir)
                                     os.remove(doc_path)
                                     _dehu_log(f'[INFO] Extraídos {len(inner_files)} ficheros del ZIP contenedor')
+                                    for inner_f in inner_files:
+                                        if inner_f.endswith('.zip'):
+                                            _anadir_meta_a_zip(os.path.join(dehu_dir, inner_f), meta)
+                                else:
+                                    _anadir_meta_a_zip(doc_path, meta)
                         except zipfile.BadZipFile:
                             _dehu_log(f'[WARN] {doc_name} no es un ZIP válido')
 
