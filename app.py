@@ -21,6 +21,8 @@ from flask import (
 )
 
 from auth import extraer_datos_certificado
+from descarga import guardar_documento, aceptar_con_reintento
+import auto
 
 import sys
 
@@ -300,48 +302,6 @@ def _limpiar_descargas():
     return dehu_dir
 
 
-def _construir_meta(notif):
-    """Construye el dict de metadata DEHÚ a partir del notif del listado."""
-    meta = {
-        'identificador': notif.get('identificador', ''),
-        'codigoOrigen': notif.get('codigoOrigen', ''),
-        'concepto': notif.get('concepto', ''),
-        'fechaPuestaDisposicion': notif.get('fechaPuestaDisposicion', ''),
-    }
-    for opt_key in ('tipoEnvio', 'organismoEmisor_codigoOrganismo', 'organismoEmisor_nombreOrganismo'):
-        val = notif.get(opt_key)
-        if val:
-            meta[opt_key] = val
-    return meta
-
-
-def _anadir_meta_a_zip(zip_path: str, meta: dict) -> None:
-    """Añade meta.json a la raíz de un ZIP existente sin recomprimir el resto.
-
-    Usa modo append: zipfile solo añade el archivo al final del ZIP,
-    sin reescribir la estructura existente. Idempotente: si ya existe
-    meta.json en el ZIP, no se duplica.
-
-    Si por cualquier motivo (ZIP corrupto, permisos, disco, etc.) no se
-    puede inyectar el meta, se loguea WARN pero NO se propaga la
-    excepción. El binario del ZIP ya está escrito y la notificación se
-    considera descargada correctamente — meta.json es una mejora, no un
-    requisito.
-    """
-    import json
-    if not os.path.isfile(zip_path):
-        return
-    try:
-        with zipfile.ZipFile(zip_path, 'a', zipfile.ZIP_DEFLATED) as zf:
-            if 'meta.json' in zf.namelist():
-                return  # ya tiene meta — re-ejecución segura
-            meta_bytes = json.dumps(meta, ensure_ascii=False, indent=2).encode('utf-8')
-            zf.writestr('meta.json', meta_bytes)
-        _dehu_log(f'[OK] meta.json añadido a {os.path.basename(zip_path)}')
-    except Exception as e:
-        _dehu_log(f'[WARN] No se pudo añadir meta a {os.path.basename(zip_path)}: {e}')
-
-
 def _generar_zip_consolidado(dehu_dir):
     """Crea un ZIP con todos los archivos descargados."""
     fecha = datetime.now().strftime('%Y%m%d_%H%M')
@@ -386,88 +346,15 @@ def ejecutar_descarga_pendientes(notificaciones, cert_context):
 
         for i, notif in enumerate(notificaciones, 1):
             ident = notif.get('identificador', '')
-            origen = notif.get('codigoOrigen', '')
             concepto = notif.get('concepto', '')
 
             _dehu_log(f'[INFO] ({i}/{len(notificaciones)}) [{ident}] Aceptando: {concepto[:60]}...')
 
             try:
-                result = client.peticion_acceso(
-                    identificador=ident,
-                    codigo_origen=origen,
-                    concepto=concepto,
-                )
-
-                # Retry automático para error 4204 (concepto no coincide)
-                xml_raw_resp = result.get('xml_raw', b'')
-                fault_text = ''
-                if isinstance(xml_raw_resp, bytes):
-                    try:
-                        fault_text = xml_raw_resp.decode('utf-8', errors='ignore')
-                    except Exception:
-                        pass
-                else:
-                    fault_text = str(xml_raw_resp)
-
-                if '4204' in fault_text:
-                    _dehu_log(f'[WARN] Error 4204 (concepto no coincide). Reintentando con concepto fresco...')
-                    import re as _re
-                    try:
-                        fresh = client.localiza_pendientes()
-                        raw_xml = fresh.get('xml_raw', b'')
-                        raw_xml_str = raw_xml.decode('utf-8', errors='ignore') if isinstance(raw_xml, bytes) else str(raw_xml)
-                        ident_pattern = _re.escape(ident)
-                        item_match = _re.search(
-                            rf'<[^>]*item[^>]*>.*?{ident_pattern}.*?</[^>]*item[^>]*>',
-                            raw_xml_str, _re.DOTALL
-                        )
-                        if item_match:
-                            concepto_match = _re.search(
-                                r'<[^>]*concepto[^>]*>(.*?)</[^>]*concepto[^>]*>',
-                                item_match.group(0), _re.DOTALL
-                            )
-                            if concepto_match and concepto_match.group(1) != concepto:
-                                raw_concepto = concepto_match.group(1)
-                                _dehu_log(f'[INFO] Probando concepto del XML raw...')
-                                result = client.peticion_acceso(
-                                    identificador=ident,
-                                    codigo_origen=origen,
-                                    concepto=raw_concepto,
-                                )
-                                if result.get('codigo') == '200':
-                                    _dehu_log(f'[OK] Retry exitoso con concepto fresco')
-                                    concepto = raw_concepto
-                    except Exception as e_retry:
-                        _dehu_log(f'[WARN] Error en retry 4204: {e_retry}')
+                result, concepto = aceptar_con_reintento(client, notif, _dehu_log)
 
                 if result['codigo'] == '200' and result.get('documento_bytes'):
-                    doc_name = result.get('documento_nombre') or f'{ident}_documento.zip'
-                    doc_name = doc_name.replace('/', '_').replace('\\', '_').replace(':', '_').replace('*', '_').replace('?', '_').replace('"', '_').replace('<', '_').replace('>', '_').replace('|', '_')
-                    doc_path = os.path.join(dehu_dir, doc_name)
-                    with open(doc_path, 'wb') as f:
-                        f.write(result['documento_bytes'])
-                    _dehu_log(f'[OK] [{ident}] Descargado: {doc_name} ({len(result["documento_bytes"]):,} bytes)')
-
-                    meta = _construir_meta(notif)
-                    meta['concepto'] = concepto
-
-                    if doc_name.endswith('.zip'):
-                        try:
-                            with zipfile.ZipFile(doc_path, 'r') as zf:
-                                inner_files = zf.namelist()
-                                has_inner_zips = any(inner_f.endswith('.zip') for inner_f in inner_files)
-                                if has_inner_zips:
-                                    zf.extractall(dehu_dir)
-                                    os.remove(doc_path)
-                                    _dehu_log(f'[INFO] Extraídos {len(inner_files)} ficheros del ZIP contenedor')
-                                    for inner_f in inner_files:
-                                        if inner_f.endswith('.zip'):
-                                            _anadir_meta_a_zip(os.path.join(dehu_dir, inner_f), meta)
-                                else:
-                                    _anadir_meta_a_zip(doc_path, meta)
-                        except zipfile.BadZipFile:
-                            _dehu_log(f'[WARN] {doc_name} no es un ZIP válido, se mantiene como está')
-
+                    guardar_documento(result, notif, concepto, dehu_dir, _dehu_log)
                     descargados += 1
                 else:
                     code = result.get('codigo', '?')
@@ -539,33 +426,7 @@ def ejecutar_descarga_realizadas(notificaciones, cert_context):
                 )
 
                 if result['codigo'] == '200' and result.get('documento_bytes'):
-                    doc_name = result.get('documento_nombre') or f'{ident}_documento.zip'
-                    doc_name = doc_name.replace('/', '_').replace('\\', '_').replace(':', '_').replace('*', '_').replace('?', '_').replace('"', '_').replace('<', '_').replace('>', '_').replace('|', '_')
-                    doc_path = os.path.join(dehu_dir, doc_name)
-                    with open(doc_path, 'wb') as f:
-                        f.write(result['documento_bytes'])
-                    _dehu_log(f'[OK] [{ident}] Descargado: {doc_name} ({len(result["documento_bytes"]):,} bytes)')
-
-                    meta = _construir_meta(notif)
-                    meta['concepto'] = concepto
-
-                    if doc_name.endswith('.zip'):
-                        try:
-                            with zipfile.ZipFile(doc_path, 'r') as zf:
-                                inner_files = zf.namelist()
-                                has_inner_zips = any(inner_f.endswith('.zip') for inner_f in inner_files)
-                                if has_inner_zips:
-                                    zf.extractall(dehu_dir)
-                                    os.remove(doc_path)
-                                    _dehu_log(f'[INFO] Extraídos {len(inner_files)} ficheros del ZIP contenedor')
-                                    for inner_f in inner_files:
-                                        if inner_f.endswith('.zip'):
-                                            _anadir_meta_a_zip(os.path.join(dehu_dir, inner_f), meta)
-                                else:
-                                    _anadir_meta_a_zip(doc_path, meta)
-                        except zipfile.BadZipFile:
-                            _dehu_log(f'[WARN] {doc_name} no es un ZIP válido')
-
+                    guardar_documento(result, notif, concepto, dehu_dir, _dehu_log)
                     descargados += 1
                 else:
                     code = result.get('codigo', '?')
@@ -603,6 +464,17 @@ def ejecutar_descarga_realizadas(notificaciones, cert_context):
             dehu_estado['procesando'] = False
 
 
+def _cert_de_sesion():
+    """Certificado de la sesión actual, para pasarlo al thread de descarga."""
+    cert_ctx = cert_storage.get(session.get('session_id', ''))
+    if cert_ctx:
+        cert_ctx = dict(cert_ctx)
+        cert_ctx['nif'] = session.get('nif', '')
+        cert_ctx['nombre'] = session.get('nombre', '')
+        cert_ctx['cif_empresa'] = session.get('cif_empresa', '')
+    return cert_ctx
+
+
 # ── Endpoints de control ──
 
 @app.route('/api/dehu/aceptar', methods=['POST'])
@@ -624,14 +496,7 @@ def dehu_aceptar():
             if dehu_estado['procesando']:
                 return jsonify({'exito': False, 'mensaje': 'Ya hay un proceso en ejecución'}), 400
 
-        # Capturar contexto de certificado para el thread
-        sid = session.get('session_id', '')
-        cert_ctx = cert_storage.get(sid)
-        if cert_ctx:
-            cert_ctx = dict(cert_ctx)
-            cert_ctx['nif'] = session.get('nif', '')
-            cert_ctx['nombre'] = session.get('nombre', '')
-            cert_ctx['cif_empresa'] = session.get('cif_empresa', '')
+        cert_ctx = _cert_de_sesion()
 
         thread = threading.Thread(target=ejecutar_descarga_pendientes, args=(notificaciones, cert_ctx))
         thread.daemon = True
@@ -661,13 +526,7 @@ def dehu_descargar_realizadas():
             if dehu_estado['procesando']:
                 return jsonify({'exito': False, 'mensaje': 'Ya hay un proceso en ejecución'}), 400
 
-        sid = session.get('session_id', '')
-        cert_ctx = cert_storage.get(sid)
-        if cert_ctx:
-            cert_ctx = dict(cert_ctx)
-            cert_ctx['nif'] = session.get('nif', '')
-            cert_ctx['nombre'] = session.get('nombre', '')
-            cert_ctx['cif_empresa'] = session.get('cif_empresa', '')
+        cert_ctx = _cert_de_sesion()
 
         thread = threading.Thread(target=ejecutar_descarga_realizadas, args=(notificaciones, cert_ctx))
         thread.daemon = True
@@ -707,11 +566,63 @@ def dehu_descargar_zip():
 
 
 # ══════════════════════════════════════════════════════════════════
+# TODO LO DE RED.ES (auto.py): un botón, sin elegir
+# ══════════════════════════════════════════════════════════════════
+
+def ejecutar_todo_redes(cert_context):
+    """Thread: baja todo lo de Red.es y lo entrega al gestor de AiKit."""
+    try:
+        with dehu_lock:
+            dehu_estado.update(procesando=True, logs=[], progreso_actual=0,
+                               progreso_total=0, resultado=None, zip_path='')
+        client = _crear_dehu_client(cert_context=cert_context)
+        resumen = auto.ejecutar(client, EXECUTABLE_DIR, _dehu_log)
+        with dehu_lock:
+            dehu_estado['resultado'] = {
+                'descargados': resumen.get('bajados', 0),
+                'errores': resumen.get('errores', 0) + (1 if resumen.get('error_entrega') else 0),
+            }
+    except Exception as e:
+        _dehu_log(f'[ERROR] Error crítico: {str(e)}')
+        with dehu_lock:
+            dehu_estado['resultado'] = {'descargados': 0, 'errores': 1}
+    finally:
+        with dehu_lock:
+            dehu_estado['procesando'] = False
+
+
+@app.route('/api/auto/estado', methods=['GET'])
+def auto_estado():
+    if 'nif' not in session:
+        return jsonify({'exito': False, 'mensaje': 'Sesión no iniciada'}), 401
+    return jsonify({'exito': True, **auto.estado(EXECUTABLE_DIR)})
+
+
+@app.route('/api/auto/ejecutar', methods=['POST'])
+def auto_ejecutar():
+    if 'nif' not in session:
+        return jsonify({'exito': False, 'mensaje': 'Sesión no iniciada'}), 401
+    with dehu_lock:
+        if dehu_estado['procesando']:
+            return jsonify({'exito': False, 'mensaje': 'Ya hay un proceso en ejecución'}), 400
+    thread = threading.Thread(target=ejecutar_todo_redes, args=(_cert_de_sesion(),))
+    thread.daemon = True
+    thread.start()
+    return jsonify({'exito': True, 'mensaje': 'Proceso iniciado'})
+
+
+# ══════════════════════════════════════════════════════════════════
 # MAIN
 # ══════════════════════════════════════════════════════════════════
 
 if __name__ == '__main__':
     os.makedirs(OUTPUTS_DIR, exist_ok=True)
+
+    # `app.py auto <orden>`: pasada «todo lo de Red.es» sin pantalla (auto.py).
+    if len(sys.argv) > 1 and sys.argv[1] == 'auto':
+        sys.exit(auto.main(sys.argv[2:], EXECUTABLE_DIR,
+                           lambda ctx, log: _crear_dehu_client(cert_context=ctx)))
+
     print("=" * 60)
     print("  DESCARGADOR DEHÚ LITE")
     print("  http://localhost:60004")
@@ -725,4 +636,5 @@ if __name__ == '__main__':
         
     threading.Thread(target=_abrir_navegador, daemon=True).start()
     
-    app.run(host='0.0.0.0', port=60004, debug=True, use_reloader=False)
+    # Solo este ordenador: la pantalla no se ofrece a la red local.
+    app.run(host='127.0.0.1', port=60004, debug=False, use_reloader=False)
