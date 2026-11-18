@@ -8,3 +8,5 @@ certs/
 .venv/
 venv/
 dist/outputs/
+auto_config.json
+.pytest_cache/

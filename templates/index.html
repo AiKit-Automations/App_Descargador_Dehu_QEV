@@ -319,6 +319,12 @@
 
     <div class="container">
 
+        <!-- Todo lo de Red.es: un botón, sin elegir (auto.py) -->
+        <div class="seccion" id="autoBox" style="margin-bottom:14px;">
+            <button class="btn btn-primary" id="btnAuto">⬇️ Bajar todo lo de Red.es y subirlo a AiKit</button>
+            <div id="autoEstado" style="margin-top:8px; font-size:13px; color:#555;"></div>
+        </div>
+
         <!-- Tabs -->
         <div class="tabs">
             <div class="tab active" data-tab="pendientes">📥 Pendientes</div>
@@ -898,6 +904,44 @@
         });
 
         // ══════════════════════════════════════════════════════
+        // TODO LO DE RED.ES (un botón, sin elegir)
+        // ══════════════════════════════════════════════════════
+        let autoInfo = null;
+
+        async function cargarAutoEstado() {
+            const el = document.getElementById('autoEstado');
+            try {
+                autoInfo = await (await fetch('/api/auto/estado')).json();
+            } catch (e) { el.textContent = ''; return; }
+            const partes = [];
+            partes.push('Solo Red.es. Se sube a ' + autoInfo.destino + '.');
+            partes.push(autoInfo.aceptar_notificaciones_pendientes
+                ? '⚠️ Las notificaciones pendientes SE ACEPTAN solas (comparecencia).'
+                : 'Las notificaciones pendientes no se aceptan: solo comunicaciones y lo ya aceptado.');
+            if (!autoInfo.gestor_configurado) partes.push('Falta configurar el usuario del gestor: se baja, pero no se sube.');
+            if (autoInfo.quedan_por_subir) partes.push(autoInfo.quedan_por_subir + ' ficheros esperan subida.');
+            const u = autoInfo.ultima_pasada;
+            if (u) partes.push('Última pasada ' + (u.fin || u.inicio).replace('T', ' ') + ': ' +
+                (u.bajados || 0) + ' bajados, ' + (u.entregados || 0) + ' entregados' +
+                (u.error_entrega ? ', entrega fallida' : '') + '.');
+            el.textContent = partes.join(' ');
+        }
+        cargarAutoEstado();
+
+        document.getElementById('btnAuto').addEventListener('click', async () => {
+            const aviso = autoInfo && autoInfo.aceptar_notificaciones_pendientes
+                ? 'Se bajará todo lo de Red.es y se subirá a AiKit.\n\n⚠️ Las notificaciones pendientes de Red.es se ACEPTARÁN (validez jurídica).'
+                : 'Se bajará todo lo de Red.es (comunicaciones y lo ya aceptado) y se subirá a AiKit.\n\nNo se acepta ninguna notificación pendiente.';
+            if (!await showConfirm('¿Bajar todo lo de Red.es?', aviso, '⬇️')) return;
+            showProgress();
+            try {
+                const data = await (await fetch('/api/auto/ejecutar', { method: 'POST' })).json();
+                if (!data.exito) { addLog(`[ERROR] ${data.mensaje}`); return; }
+                startPolling(cargarAutoEstado);
+            } catch (e) { addLog(`[ERROR] ${e.message}`); }
+        });
+
+        // ══════════════════════════════════════════════════════
         // PROGRESS + POLLING
         // ══════════════════════════════════════════════════════
         let pollInterval = null;
@@ -922,7 +966,7 @@
             area.scrollTop = area.scrollHeight;
         }
 
-        function startPolling() {
+        function startPolling(alTerminar) {
             if (pollInterval) clearInterval(pollInterval);
             pollInterval = setInterval(async () => {
                 try {
@@ -949,6 +993,7 @@
                         clearInterval(pollInterval);
                         pollInterval = null;
                         const r = data.resultado;
+                        if (alTerminar) alTerminar();
                         document.getElementById('progressBar').style.width = '100%';
                         document.getElementById('progressText').textContent =
                             `✅ Completado: ${r.descargados} descargados, ${r.errores} errores`;
