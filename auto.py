@@ -47,6 +47,13 @@ MAX_POR_PASADA = 998       # mismo tope que la pantalla manual
 # el 18-11-2026). 29 días a las 00:00 cabe siempre.
 DIAS_REALIZADAS = 29
 MAX_RESPUESTAS_NEGATIVAS = 3   # tras 3 «no» de DEHÚ a un envío se deja de pedir
+# 4225 («máximo de consultas») es de cada envío: DEHÚ admite un número limitado
+# de consultas por envío. Ese envío cuenta un «no» y la pasada sigue; solo si
+# llegan varios seguidos se para, por si el tope fuera de todo el certificado.
+MAX_4225_SEGUIDOS = 5
+# 4305: tope diario de PeticionAcceso del certificado. No es un «no» del envío:
+# se deja de abrir pendientes hasta la próxima pasada y se sigue con lo realizado.
+CODIGO_TOPE_DIARIO_ACCESO = '4305'
 TAMANO_LOTE = 20
 ESPERA_SONDEO = 10         # segundos entre consultas de progreso al gestor
 MAX_ESPERA_LOTE = 2 * 3600
@@ -237,7 +244,9 @@ def _a_por_subir(reg: Registro, rutas: list, ident: str) -> list:
 
 
 def _bajar_uno(client, notif, via, reg: Registro, log) -> str:
-    """Baja un envío y lo deja en por_subir. Devuelve 'ok', 'no' o 'limite'."""
+    """Baja un envío y lo deja en por_subir. Devuelve 'ok', 'no', 'agotado'
+    (4225: ese envío no admite más consultas) o 'tope_acceso' (4305: el
+    certificado no puede abrir más pendientes hoy)."""
     ident = notif.get('identificador', '')
     if via == 'pendiente':
         result, concepto = aceptar_con_reintento(client, notif, log)
@@ -258,12 +267,14 @@ def _bajar_uno(client, notif, via, reg: Registro, log) -> str:
         return 'ok'
 
     codigo, desc = result.get('codigo', '?'), result.get('descripcion', '?')
-    if codigo == '4225':
-        log(f'[WARN] DEHÚ: límite de consultas alcanzado ({desc}). Se sigue en la próxima pasada.')
-        return 'limite'
+    xml_raw = result.get('xml_raw', b'')
+    texto = xml_raw.decode('utf-8', errors='ignore') if isinstance(xml_raw, bytes) else str(xml_raw)
+    if via == 'pendiente' and (codigo == CODIGO_TOPE_DIARIO_ACCESO or CODIGO_TOPE_DIARIO_ACCESO in texto):
+        log(f'[WARN] DEHÚ: tope diario de aperturas alcanzado ({desc}). Las pendientes siguen en la próxima pasada.')
+        return 'tope_acceso'
     log(f'[ERROR] [{ident}] DEHÚ no da el documento: {codigo} - {desc}')
     reg.anotar_negativa(notif, via, codigo, desc)
-    return 'no'
+    return 'agotado' if codigo == '4225' else 'no'
 
 
 def _dato_pendiente(notif: dict) -> dict:
@@ -279,7 +290,7 @@ def _dato_pendiente(notif: dict) -> dict:
 def bajar_todo(client, cfg: dict, reg: Registro, log) -> dict:
     """Baja todo lo de Red.es que falte. No sube nada."""
     r = {'bajados': 0, 'sin_documento': 0, 'errores': 0, 'listado_incompleto': False,
-         'notificaciones_sin_aceptar': 0, 'limite': False,
+         'notificaciones_sin_aceptar': 0, 'limite': False, 'consultas_agotadas': 0,
          # Notificaciones de Red.es que la pasada deja pendientes (no se han
          # abierto): se informan a AiKit con los datos del listado, nada más.
          'pendientes_lista': [], 'pendientes_listado_completo': True}
@@ -297,6 +308,7 @@ def bajar_todo(client, cfg: dict, reg: Registro, log) -> dict:
         ('realizada', lambda: client.localiza_todas_realizadas(fecha_desde=desde)),
     )
     pedidos = 0
+    agotados_seguidos = 0
     for via, listar in listados:
         listado = listar()
         if listado.get('errores_paginacion'):
@@ -335,11 +347,21 @@ def bajar_todo(client, cfg: dict, reg: Registro, log) -> dict:
                 continue
             if resultado != 'ok' and notificacion_pendiente:
                 r['pendientes_lista'].append(_dato_pendiente(notif))
-            if resultado == 'limite':
-                r['limite'] = True
-                if via == 'pendiente':
-                    r['pendientes_listado_completo'] = False
+            if resultado == 'tope_acceso':
+                # No se abren más pendientes en esta pasada; lo realizado sigue.
+                r['tope_diario_aperturas'] = True
+                r['pendientes_listado_completo'] = False
                 break
+            if resultado == 'agotado':
+                r['consultas_agotadas'] += 1
+                agotados_seguidos += 1
+                if agotados_seguidos >= MAX_4225_SEGUIDOS:
+                    log(f'[WARN] DEHÚ: {agotados_seguidos} envíos seguidos sin consultas disponibles (4225). '
+                        f'Se sigue en la próxima pasada.')
+                    r['limite'] = True
+                    break
+                continue
+            agotados_seguidos = 0
             r['bajados' if resultado == 'ok' else 'sin_documento'] += 1
         if r['limite']:
             break
@@ -577,7 +599,7 @@ def main(argv, base_dir, crear_cliente) -> int:
             log(f'[ERROR] La pasada no ha podido empezar: {e}')
             return 1
         return 1 if (resumen.get('error_entrega') or resumen.get('errores')
-                     or resumen.get('listado_incompleto')) else 0
+                     or resumen.get('listado_incompleto') or resumen.get('consultas_agotadas')) else 0
     elif orden == 'programar':
         hora = argv[1] if len(argv) > 1 else '08:00'
         return subprocess.call(['schtasks', '/Create', '/F', '/TN', NOMBRE_TAREA, '/SC', 'DAILY',

@@ -103,13 +103,15 @@ La tarea se llama `DescargadorDehuQEV-TodoRedes` y se ejecuta con la cuenta que 
 - Si la subida falla, lo bajado se queda en `por_subir` y se reintenta en la siguiente pasada, sin volver a pedirlo a DEHÚ.
 - Un envío ya bajado o ya subido no se vuelve a pedir ni a subir.
 - Si DEHÚ contesta tres veces que no tiene el documento de un envío, se deja de pedir. Un corte de red no cuenta.
+- DEHÚ admite un número limitado de consultas por envío (error 4225). Ese envío cuenta un «no» y la pasada sigue con los demás; con 5 seguidos la pasada se para hasta el día siguiente. La orden termina con código 1 para que se vea.
+- DEHÚ limita las aperturas de pendientes por certificado y día (error 4305). Al llegar al tope no se abre nada más ese día, no cuenta como «no» de ningún envío, y la pasada sigue con lo ya realizado.
 - La primera pasada sube también lo realizado en los últimos 29 días, aunque ya lo hubierais subido a mano: el gestor sustituye el registro de ese envío, no lo duplica.
 - Si DEHÚ rechaza un listado, la pasada lo dice como error y termina con código 1; no se da por buena una pasada que no ha visto todo.
 - Como mucho 998 documentos por pasada, el mismo tope que la pantalla manual; el resto entra en la siguiente.
 
 ## Pruebas
 
-`python -m pytest tests -q` (24 pruebas, sin red: DEHÚ y el gestor se sustituyen por respuestas de mentira y el certificado es uno autofirmado creado en la prueba). Cubren: solo Red.es; notificaciones pendientes sin aceptar por defecto; el permiso solo con `true`; la lista de pendientes (qué lleva, que no abre nada, lista vacía, gestor que no la admite); el rango de fechas que DEHÚ admite; un listado rechazado termina en error; no repetir; reintento de la subida; registro de lo enviado; que el certificado y su contraseña no salen; y que la pantalla manual sigue funcionando.
+`python -m pytest tests -q` (26 pruebas, sin red: DEHÚ y el gestor se sustituyen por respuestas de mentira y el certificado es uno autofirmado creado en la prueba). Cubren: solo Red.es; notificaciones pendientes sin aceptar por defecto; el permiso solo con `true`; la lista de pendientes (qué lleva, que no abre nada, lista vacía, gestor que no la admite); el rango de fechas que DEHÚ admite; un listado rechazado termina en error; los topes de DEHÚ (4225 por envío y 4305 por día); no repetir; reintento de la subida; registro de lo enviado; que el certificado y su contraseña no salen; y que la pantalla manual sigue funcionando.
 
 ## Probado con el DEHÚ real (18-11-2026)
 
@@ -119,7 +121,7 @@ En un PC con Windows 11 y Python 3.11, con un certificado de AiKit (no el vuestr
 - Bajada real con `ConsultaRealizadas` de una muestra de 5 envíos de Red.es (3 comunicaciones y 2 notificaciones ya aceptadas): los 5 bajan, llevan su `meta.json` y llegan al gestor de mentira por los tres pasos. Los 3 PDF de comunicación son idénticos (sha256) a los que AiKit ya tenía de esos envíos.
 - Una segunda pasada no vuelve a pedir nada a DEHÚ.
 - La lista de pendientes llegó vacía, como correspondía.
-- Windows: las 24 pruebas pasan; DPAPI cifra y descifra, también entre la sesión que configura y la tarea programada, y la contraseña no aparece en `auto_config.json`; `auto configurar` pregunta y guarda; `auto programar` crea la tarea, la tarea ejecuta una pasada completa (resultado 0) y `auto desprogramar` la borra.
+- Windows: las pruebas pasan; DPAPI cifra y descifra, también entre la sesión que configura y la tarea programada, y la contraseña no aparece en `auto_config.json`; `auto configurar` pregunta y guarda; `auto programar` crea la tarea, la tarea ejecuta una pasada completa (resultado 0) y `auto desprogramar` la borra.
 - El `.exe` se genera con la orden de abajo y hace una pasada real.
 
 Esa prueba encontró y corrigió dos fallos: el listado de realizadas pedía 30 días y DEHÚ lo rechazaba (error 4224), y una pasada con el listado rechazado terminaba sin error.
@@ -130,5 +132,6 @@ Esa prueba encontró y corrigió dos fallos: el listado de realizadas pedía 30 
 - **El gestor real**: la entrega solo se ha hecho contra un gestor de mentira. En particular, no se ha visto cómo clasifica el gestor real un `<nombre>.pdf.zip`.
 - **La lista de pendientes con datos reales**: el buzón de la prueba no tenía notificaciones de Red.es pendientes. La ruta `POST /api/dehu-pendientes` del gestor está preparada aparte y aún no desplegada; hasta entonces el gestor contesta 404 y la pasada lo anota y sigue.
 - **El botón de la pantalla** en Windows (la pasada se ha probado por la línea de órdenes y la tarea programada).
+- **Los topes de DEHÚ** (4225 y 4305): no aparecieron en la prueba; su tratamiento solo está probado con respuestas de mentira.
 - Vuestro certificado y vuestro ordenador.
 - El `.exe` de `dist/` es el de la versión anterior: no incluye nada de esto. Para generarlo con este código: `pyinstaller --onefile --console --add-data "templates;templates" --add-data "static;static" --name DescargadorDehuQEV app.py` (con consola, porque `auto configurar` pregunta por teclado). Con esa orden se generó el de la prueba.

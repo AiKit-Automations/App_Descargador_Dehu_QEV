@@ -87,6 +87,8 @@ class DehuFalso:
         self.codigo_consulta = {}  # ident -> código de error forzado
         self.fallo_red = set()     # ident -> lanza excepción
         self.fechas_desde = []     # «Fecha Desde» de cada LocalizaRealizadas
+        self.codigo_acceso = None  # código de error forzado en PeticionAcceso
+        self.intentos_acceso = []  # identificadores con PeticionAcceso, salga bien o no
 
     def __call__(self, url, accion, xml_bytes):
         assert 'redsara.es' in url
@@ -104,6 +106,10 @@ class DehuFalso:
         if ident in self.fallo_red:
             raise ConnectionResetError('corte de red de prueba')
         if accion == 'PeticionAcceso':
+            self.intentos_acceso.append(ident)
+            if self.codigo_acceso:
+                return Respuesta(self._xml_codigo(
+                    self.codigo_acceso, 'El número de peticiones diarias al método peticionAcceso ha superado el máximo permitido'))
             self.aceptadas.append(ident)
             item = next(i for i in self.pendientes if i['identificador'] == ident)
             self.pendientes.remove(item)
@@ -366,12 +372,38 @@ def test_un_corte_de_red_no_cuenta_y_se_reintenta(entorno):
     assert r['bajados'] == 1 and r['entregados'] == 1
 
 
-def test_limite_de_consultas_para_la_pasada(entorno):
+def test_un_envio_sin_consultas_no_para_la_pasada(entorno):
+    # 4225 es de ese envío: los demás se bajan, y a la tercera se deja de pedir.
     dehu = DehuFalso(realizadas=[_item('R1', '2'), _item('R2', '2')])
     dehu.codigo_consulta['R1'] = '4225'
     r = entorno.pasada(dehu)
-    assert r['limite'] is True and dehu.consultadas == ['R1']
-    assert auto.Registro(entorno.base).envio('R1') == {}      # no cuenta como «no»
+    assert r['limite'] is False and r['consultas_agotadas'] == 1 and r['bajados'] == 1
+    assert dehu.consultadas == ['R1', 'R2'] and 'R2.zip' in GestorFalso.recibidos
+    for _ in range(4):
+        entorno.pasada(dehu)
+    assert dehu.consultadas.count('R1') == auto.MAX_RESPUESTAS_NEGATIVAS
+    assert auto.Registro(entorno.base).envio('R1')['ultima_respuesta'].startswith('4225')
+
+
+def test_muchos_4225_seguidos_paran_la_pasada(entorno):
+    idents = [f'R{n}' for n in range(auto.MAX_4225_SEGUIDOS + 2)]
+    dehu = DehuFalso(realizadas=[_item(i, '2') for i in idents])
+    dehu.codigo_consulta = {i: '4225' for i in idents}
+    r = entorno.pasada(dehu)
+    assert r['limite'] is True and len(dehu.consultadas) == auto.MAX_4225_SEGUIDOS
+
+
+def test_el_tope_diario_de_aperturas_no_cuenta_como_no_y_lo_realizado_sigue(entorno):
+    dehu = DehuFalso(pendientes=[_item('P1', '1'), _item('P2', '1')], realizadas=[_item('R1', '2')])
+    dehu.codigo_acceso = '4305'
+    r = entorno.pasada(dehu)
+    assert r['tope_diario_aperturas'] is True and dehu.aceptadas == []
+    assert dehu.intentos_acceso == ['P1']                     # no se insiste con P2
+    assert auto.Registro(entorno.base).envio('P1') == {}      # no cuenta como «no»
+    assert dehu.consultadas == ['R1'] and r['bajados'] == 1
+    dehu.codigo_acceso = None
+    r = entorno.pasada(dehu)
+    assert dehu.aceptadas == ['P1', 'P2'] and r['bajados'] == 2
 
 
 def test_restos_de_una_pasada_interrumpida_se_entregan(entorno):
