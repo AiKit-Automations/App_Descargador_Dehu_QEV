@@ -86,6 +86,7 @@ class DehuFalso:
         self.consultadas = []      # identificadores con ConsultaRealizadas
         self.codigo_consulta = {}  # ident -> código de error forzado
         self.fallo_red = set()     # ident -> lanza excepción
+        self.fechas_desde = []     # «Fecha Desde» de cada LocalizaRealizadas
 
     def __call__(self, url, accion, xml_bytes):
         assert 'redsara.es' in url
@@ -94,6 +95,11 @@ class DehuFalso:
         if accion == 'Localiza':
             return Respuesta(self._listado(self.pendientes))
         if accion == 'LocalizaRealizadas':
+            # Como el DEHÚ real: una «Fecha Desde» de más de 30 días es un 4224.
+            desde = datetime.datetime.fromisoformat(raiz.xpath("string(.//*[local-name()='fechaDesde'])"))
+            self.fechas_desde.append(desde)
+            if datetime.datetime.now() - desde > datetime.timedelta(days=30):
+                return Respuesta(self._xml_codigo('4224', 'La "Fecha Desde" no puede ser anterior a "30" días'))
             return Respuesta(self._listado(self.realizadas))
         if ident in self.fallo_red:
             raise ConnectionResetError('corte de red de prueba')
@@ -122,7 +128,9 @@ class DehuFalso:
             f"<tipoEnvio>{i['tipoEnvio']}</tipoEnvio>"
             f"<fechaPuestaDisposicion>{i['fechaPuestaDisposicion']}</fechaPuestaDisposicion>"
             f"<organismoEmisor><codigoOrganismo>{i['emisor'][0]}</codigoOrganismo>"
-            f"<nombreOrganismo>{i['emisor'][1]}</nombreOrganismo></organismoEmisor></item>"
+            f"<nombreOrganismo>{i['emisor'][1]}</nombreOrganismo></organismoEmisor>"
+            f"<vinculo>1</vinculo><titular><nifTitular>B11111111</nifTitular>"
+            f"<nombreTitular>CLIENTE DE PRUEBA SL</nombreTitular></titular></item>"
             for i in items)
         return self._xml_codigo('200', 'OK', cuerpo)
 
@@ -151,6 +159,8 @@ class GestorFalso:
     cuerpos = []             # todo lo enviado, para buscar secretos
     login_ok = True
     error_claude = None
+    pendientes = []          # cada lista de pendientes recibida
+    estado_pendientes = 200  # 404 = gestor que aún no tiene la ruta
 
     def __init__(self):
         self._sondeos = 0
@@ -159,6 +169,7 @@ class GestorFalso:
     def reiniciar(cls):
         cls.peticiones, cls.recibidos, cls.cuerpos = [], {}, []
         cls.login_ok, cls.error_claude = True, None
+        cls.pendientes, cls.estado_pendientes = [], 200
 
     def post(self, url, json=None, files=None, timeout=None, allow_redirects=True):
         assert url.startswith(auto.GESTOR_URL + '/'), url
@@ -168,6 +179,12 @@ class GestorFalso:
             type(self).cuerpos.append(repr(json).encode())
             ok = self.login_ok and json['password'] == GESTOR_PASSWORD
             return RespuestaGestor({'exito': ok, 'mensaje': 'Credenciales incorrectas'}, 200 if ok else 401)
+        if url.endswith('/api/dehu-pendientes'):
+            type(self).cuerpos.append(repr(json).encode())
+            if self.estado_pendientes != 200:
+                return RespuestaGestor({'exito': False, 'mensaje': 'fallo de prueba'}, self.estado_pendientes)
+            type(self).pendientes.append(json)
+            return RespuestaGestor({'exito': True})
         if url.endswith('/api/upload-zips'):
             self._lote = {nombre: f.read() for _campo, (nombre, f, _tipo) in files}
             type(self).cuerpos.extend(self._lote.values())
@@ -214,6 +231,7 @@ def entorno(tmp_path, monkeypatch, pfx_b64):
     class E:
         base = str(tmp_path)
         logs = []
+        pfx_b64 = None
 
         def pasada(self, dehu):
             return auto.ejecutar(montar(dehu), self.base, self.logs.append)
@@ -225,6 +243,7 @@ def entorno(tmp_path, monkeypatch, pfx_b64):
         def por_subir(self):
             return sorted(os.listdir(os.path.join(self.base, 'outputs', 'auto', 'por_subir')))
 
+    E.pfx_b64 = pfx_b64
     return E()
 
 
@@ -300,6 +319,8 @@ def test_todo_lo_enviado_queda_anotado_y_lleva_meta(entorno):
     dehu = DehuFalso(pendientes=[_item('P1', '1')], realizadas=[_item('R1', '2')])
     entorno.pasada(dehu)
     lineas = open(os.path.join(entorno.base, 'outputs', 'auto', 'enviado.log'), encoding='utf-8').read().splitlines()
+    assert sum('/api/dehu-pendientes' in linea for linea in lineas) == 1     # la lista de pendientes, aparte
+    lineas = [linea for linea in lineas if '/api/dehu-pendientes' not in linea]
     assert len(lineas) == len(GestorFalso.recibidos) == 2
     import hashlib
     for linea in lineas:
@@ -367,6 +388,78 @@ def test_sin_usuario_del_gestor_se_baja_y_se_guarda(entorno):
     r = entorno.pasada(DehuFalso(realizadas=[_item('R1', '2')]))
     assert r['bajados'] == 1 and 'error_entrega' in r and entorno.por_subir() == ['R1.zip']
     assert GestorFalso.peticiones == []
+
+
+def test_las_pendientes_sin_aceptar_se_informan_sin_abrirlas(entorno):
+    dehu = DehuFalso(pendientes=[_item('P1', '1'), _item('P2', '2', concepto='KC/0000012345 - Requerimiento'),
+                                 _item('P4', '2', AEAT)])
+    r = entorno.pasada(dehu)
+
+    assert dehu.aceptadas == ['P1'] and dehu.consultadas == []      # P2 ni se acepta ni se consulta
+    assert r['pendientes_informadas'] == 1 and 'pendientes_lista' not in r
+    informe = GestorFalso.pendientes[-1]
+    assert informe['listado_completo'] is True
+    assert informe['pendientes'] == [{
+        'identificador': 'P2', 'codigoOrigen': 'ORG-P2', 'concepto': 'KC/0000012345 - Requerimiento',
+        'fechaPuestaDisposicion': '2026-11-10T09:00:00', 'tipoEnvio': '2',
+        'organismoEmisor_codigoOrganismo': 'EA0044367', 'organismoEmisor_nombreOrganismo': 'Red.es',
+        'titular_nifTitular': 'B11111111', 'titular_nombreTitular': 'CLIENTE DE PRUEBA SL', 'vinculo': '1'}]
+    # Lo enviado queda tal cual en disco y anotado.
+    carpeta = os.path.join(entorno.base, 'outputs', 'auto')
+    with open(os.path.join(carpeta, 'pendientes_informadas.json'), encoding='utf-8') as f:
+        assert json.load(f) == informe
+    with open(os.path.join(carpeta, 'enviado.log'), encoding='utf-8') as f:
+        assert any('/api/dehu-pendientes\tpendientes_informadas.json' in linea and linea.rstrip().endswith('entregado')
+                   for linea in f)
+
+
+def test_sin_pendientes_se_informa_una_lista_vacia(entorno):
+    r = entorno.pasada(DehuFalso(realizadas=[_item('R1', '2')]))
+    assert r['pendientes_informadas'] == 0 and GestorFalso.pendientes[-1]['pendientes'] == []
+    r = entorno.pasada(DehuFalso(realizadas=[_item('R1', '2')]))     # nada que subir: se informa igual
+    assert r['pendientes_informadas'] == 0 and len(GestorFalso.pendientes) == 2
+
+
+def test_con_permiso_solo_se_informa_la_que_no_se_pudo_aceptar(entorno):
+    entorno.permitir_aceptar()
+    dehu = DehuFalso(pendientes=[_item('P2', '2'), _item('P5', '2')])
+    dehu.fallo_red = {'P5'}
+    r = entorno.pasada(dehu)
+    assert dehu.aceptadas == ['P2']
+    assert [p['identificador'] for p in GestorFalso.pendientes[-1]['pendientes']] == ['P5']
+    assert r['pendientes_informadas'] == 1
+
+
+def test_un_gestor_sin_la_ruta_de_pendientes_no_estropea_la_entrega(entorno):
+    for estado in (404, 500):
+        GestorFalso.reiniciar()
+        GestorFalso.estado_pendientes = estado
+        dehu = DehuFalso(pendientes=[_item(f'P{estado}', '2')], realizadas=[_item(f'R{estado}', '2')])
+        r = entorno.pasada(dehu)
+        assert r['pendientes_informadas'] is None and r['entregados'] == 1
+        assert 'error_entrega' not in r and ('error_pendientes' in r) == (estado == 500)
+        assert GestorFalso.pendientes == []
+
+
+def test_las_realizadas_se_piden_dentro_de_lo_que_dehu_admite(entorno):
+    dehu = DehuFalso(realizadas=[_item('R1', '2')])
+    r = entorno.pasada(dehu)
+    assert r['bajados'] == 1 and r['listado_incompleto'] is False
+    hace = datetime.datetime.now() - dehu.fechas_desde[0]
+    assert datetime.timedelta(days=29) <= hace <= datetime.timedelta(days=30)
+
+
+def test_un_listado_que_dehu_rechaza_no_pasa_por_bueno(entorno, monkeypatch, capsys):
+    monkeypatch.setattr(auto, 'DIAS_REALIZADAS', 31)
+    dehu = DehuFalso(realizadas=[_item('R1', '2')])
+    r = entorno.pasada(dehu)
+    assert r['listado_incompleto'] is True and r['bajados'] == 0
+    assert any(linea.startswith('[ERROR] El listado de realizadas') for linea in entorno.logs)
+    # La orden de la tarea programada termina con error, no en silencio.
+    monkeypatch.setattr(auto, 'cert_context_guardado', lambda base: {})
+    cliente = DEHuClient(DEHuConfig(pfx_base64=entorno.pfx_b64, key_password=PFX_PASSWORD,
+                                    nif='B00000000', nombre='PRUEBA SL'))
+    assert auto.main(['ejecutar'], entorno.base, lambda ctx, log: cliente) == 1
 
 
 def test_es_red_es():

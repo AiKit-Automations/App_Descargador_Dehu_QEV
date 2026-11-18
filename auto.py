@@ -5,7 +5,9 @@ titular del certificado y lo entrega a AiKit, sin que nadie elija.
 Qué sale de este ordenador y a dónde (no hay más destinos que estos dos):
   1. DEHÚ (redsara.es): las mismas llamadas que la pantalla manual.
   2. GESTOR_URL: los ZIP de Red.es tal como los devuelve DEHÚ, con su
-     meta.json, y el usuario y la contraseña del gestor para entrar.
+     meta.json, el usuario y la contraseña del gestor para entrar, y la
+     lista de notificaciones de Red.es que siguen pendientes sin aceptar
+     (solo los datos del listado de DEHÚ; no se abren).
 El certificado y su contraseña no se envían a ningún sitio.
 
 Qué queda en este ordenador (carpeta outputs/auto):
@@ -13,6 +15,7 @@ Qué queda en este ordenador (carpeta outputs/auto):
   entregado/     copia de los ZIP ya entregados
   registro.json  estado de cada envío (para no repetir y para reintentar)
   enviado.log    una línea por cada fichero enviado: cuándo, a dónde, sha256
+  pendientes_informadas.json  la última lista de pendientes enviada, tal cual
 
 Documento para revisión: REVISION_IT.md.
 """
@@ -39,7 +42,10 @@ from descarga import (
 GESTOR_URL = 'https://clasificador-dehu-v2-production.up.railway.app'
 
 MAX_POR_PASADA = 998       # mismo tope que la pantalla manual
-DIAS_REALIZADAS = 30       # DEHÚ solo devuelve realizadas de los últimos 30 días
+# DEHÚ rechaza una «Fecha Desde» de más de 30 días (error 4224) y la pasada
+# pide desde las 00:00: con 30 el listado entero falla (visto con el DEHÚ real
+# el 18-11-2026). 29 días a las 00:00 cabe siempre.
+DIAS_REALIZADAS = 29
 MAX_RESPUESTAS_NEGATIVAS = 3   # tras 3 «no» de DEHÚ a un envío se deja de pedir
 TAMANO_LOTE = 20
 ESPERA_SONDEO = 10         # segundos entre consultas de progreso al gestor
@@ -260,10 +266,23 @@ def _bajar_uno(client, notif, via, reg: Registro, log) -> str:
     return 'no'
 
 
+def _dato_pendiente(notif: dict) -> dict:
+    """Lo que se informa de una notificación pendiente: lo que trae el listado
+    de DEHÚ (el mismo meta que acompaña a un ZIP, más a quién va dirigida)."""
+    dato = construir_meta(notif)
+    for clave in ('titular_nifTitular', 'titular_nombreTitular', 'vinculo'):
+        if notif.get(clave):
+            dato[clave] = notif[clave]
+    return dato
+
+
 def bajar_todo(client, cfg: dict, reg: Registro, log) -> dict:
     """Baja todo lo de Red.es que falte. No sube nada."""
     r = {'bajados': 0, 'sin_documento': 0, 'errores': 0, 'listado_incompleto': False,
-         'notificaciones_sin_aceptar': 0, 'limite': False}
+         'notificaciones_sin_aceptar': 0, 'limite': False,
+         # Notificaciones de Red.es que la pasada deja pendientes (no se han
+         # abierto): se informan a AiKit con los datos del listado, nada más.
+         'pendientes_lista': [], 'pendientes_listado_completo': True}
 
     # Restos de una pasada interrumpida: se entregan, no se borran.
     for carpeta in os.listdir(reg.tmp):
@@ -282,21 +301,28 @@ def bajar_todo(client, cfg: dict, reg: Registro, log) -> dict:
         listado = listar()
         if listado.get('errores_paginacion'):
             r['listado_incompleto'] = True
-            log(f'[WARN] El listado de {via}s no está completo: {listado["errores_paginacion"]}')
+            if via == 'pendiente':
+                r['pendientes_listado_completo'] = False
+            log(f'[ERROR] El listado de {via}s no está completo: {listado["errores_paginacion"]}')
         de_redes = [i for i in listado.get('items', []) if es_red_es(i) and i.get('identificador')]
         log(f'[INFO] {via}s: {len(listado.get("items", []))} en DEHÚ, {len(de_redes)} de Red.es')
 
         for notif in de_redes:
-            if not reg.hay_que_pedir(notif['identificador']):
-                continue
             # tipoEnvio «1» es comunicación; todo lo demás se trata como
             # notificación, que pendiente solo se acepta con el permiso activo.
-            if (via == 'pendiente' and notif.get('tipoEnvio') != '1'
-                    and not cfg['aceptar_notificaciones_pendientes']):
+            notificacion_pendiente = via == 'pendiente' and notif.get('tipoEnvio') != '1'
+            if notificacion_pendiente and not cfg['aceptar_notificaciones_pendientes']:
                 r['notificaciones_sin_aceptar'] += 1
+                r['pendientes_lista'].append(_dato_pendiente(notif))
+                continue
+            if not reg.hay_que_pedir(notif['identificador']):
+                if notificacion_pendiente:      # DEHÚ ya dijo «no» tres veces: sigue pendiente
+                    r['pendientes_lista'].append(_dato_pendiente(notif))
                 continue
             if pedidos >= MAX_POR_PASADA:
                 r['limite'] = True
+                if via == 'pendiente':          # quedan pendientes sin mirar
+                    r['pendientes_listado_completo'] = False
                 break
             pedidos += 1
             try:
@@ -304,9 +330,15 @@ def bajar_todo(client, cfg: dict, reg: Registro, log) -> dict:
             except Exception as e:      # fallo de red o de DEHÚ: se reintenta otro día
                 log(f'[ERROR] [{notif["identificador"]}] {e}')
                 r['errores'] += 1
+                if notificacion_pendiente:
+                    r['pendientes_lista'].append(_dato_pendiente(notif))
                 continue
+            if resultado != 'ok' and notificacion_pendiente:
+                r['pendientes_lista'].append(_dato_pendiente(notif))
             if resultado == 'limite':
                 r['limite'] = True
+                if via == 'pendiente':
+                    r['pendientes_listado_completo'] = False
                 break
             r['bajados' if resultado == 'ok' else 'sin_documento'] += 1
         if r['limite']:
@@ -314,7 +346,7 @@ def bajar_todo(client, cfg: dict, reg: Registro, log) -> dict:
 
     if r['notificaciones_sin_aceptar']:
         log(f'[INFO] {r["notificaciones_sin_aceptar"]} notificaciones pendientes de Red.es NO se han aceptado '
-            f'(permiso apagado). Entrarán cuando alguien las acepte.')
+            f'(permiso apagado). Entrarán cuando alguien las acepte. AiKit recibe solo la lista.')
     return r
 
 
@@ -334,12 +366,37 @@ def _json(resp, que):
     return datos
 
 
-def entregar_todo(cfg: dict, reg: Registro, log, password: str) -> dict:
+def informar_pendientes(s, reg: Registro, informe: dict, log) -> dict:
+    """Envía al gestor la lista de notificaciones de Red.es que siguen
+    pendientes. Solo datos del listado de DEHÚ: no se abre ni se acepta nada.
+    Lo enviado queda tal cual en pendientes_informadas.json y anotado en
+    enviado.log. Si falla, la pasada sigue: los ZIP se entregan igual."""
+    ruta = os.path.join(reg.dir, 'pendientes_informadas.json')
+    _escribir_json(ruta, informe)
+    url = f'{GESTOR_URL}/api/dehu-pendientes'
+    try:
+        resp = s.post(url, timeout=60, allow_redirects=False, json=informe)
+        if resp.status_code in (404, 405):
+            reg.anotar_envio_log(url, ruta, f'no admitido (HTTP {resp.status_code})')
+            log('[INFO] El gestor de AiKit aún no admite la lista de pendientes; no se ha registrado.')
+            return {'pendientes_informadas': None}
+        _json(resp, 'lista de pendientes')
+    except (EntregaError, requests.RequestException) as e:
+        reg.anotar_envio_log(url, ruta, 'fallido')
+        log(f'[WARN] No se ha podido informar de las pendientes: {e}')
+        return {'pendientes_informadas': None, 'error_pendientes': str(e)}
+    reg.anotar_envio_log(url, ruta, 'entregado')
+    log(f'[OK] Informadas a AiKit {len(informe["pendientes"])} notificaciones de Red.es pendientes (sin abrir).')
+    return {'pendientes_informadas': len(informe['pendientes'])}
+
+
+def entregar_todo(cfg: dict, reg: Registro, log, password: str, informe_pendientes: dict = None) -> dict:
     """Sube al gestor todo lo que hay en por_subir, por lotes. Un lote que el
-    gestor no procesa se queda en por_subir y se reintenta en la próxima pasada."""
+    gestor no procesa se queda en por_subir y se reintenta en la próxima pasada.
+    Si se da `informe_pendientes`, se envía antes, en la misma sesión."""
     r = {'entregados': 0, 'por_entregar': 0, 'errores_gestor': 0}
     pendientes = sorted(f for f in os.listdir(reg.por_subir) if f.lower().endswith('.zip'))
-    if not pendientes:
+    if not pendientes and informe_pendientes is None:
         return r
     r['por_entregar'] = len(pendientes)
 
@@ -347,6 +404,9 @@ def entregar_todo(cfg: dict, reg: Registro, log, password: str) -> dict:
     try:
         _json(s.post(f'{GESTOR_URL}/login-password', timeout=60, allow_redirects=False,
                      json={'usuario': cfg['gestor_usuario'], 'password': password}), 'entrada al gestor')
+
+        if informe_pendientes is not None:
+            r.update(informar_pendientes(s, reg, informe_pendientes, log))
 
         for i in range(0, len(pendientes), TAMANO_LOTE):
             lote = [os.path.join(reg.por_subir, n) for n in pendientes[i:i + TAMANO_LOTE]]
@@ -409,13 +469,17 @@ def ejecutar(client, base_dir, log) -> dict:
     log(f'[INFO] ========== TODO LO DE RED.ES — aceptar notificaciones pendientes: '
         f'{"SÍ" if cfg["aceptar_notificaciones_pendientes"] else "NO"} ==========')
 
-    resumen.update(bajar_todo(client, cfg, reg, log))
+    bajado = bajar_todo(client, cfg, reg, log)
+    # La lista no se guarda en el resumen de la pasada: va en su propio fichero.
+    informe = {'generado_en': _ahora(), 'listado_completo': bajado.pop('pendientes_listado_completo'),
+               'pendientes': bajado.pop('pendientes_lista')}
+    resumen.update(bajado)
 
     if not cfg['gestor_usuario'] or not cfg['gestor_password_dpapi']:
         resumen['error_entrega'] = 'Falta configurar el usuario del gestor (auto configurar).'
     else:
         try:
-            resumen.update(entregar_todo(cfg, reg, log, desproteger(cfg['gestor_password_dpapi'])))
+            resumen.update(entregar_todo(cfg, reg, log, desproteger(cfg['gestor_password_dpapi']), informe))
         except (EntregaError, requests.RequestException, RuntimeError) as e:
             resumen['error_entrega'] = str(e)
     if resumen.get('error_entrega'):
@@ -512,7 +576,8 @@ def main(argv, base_dir, crear_cliente) -> int:
         except Exception as e:
             log(f'[ERROR] La pasada no ha podido empezar: {e}')
             return 1
-        return 1 if resumen.get('error_entrega') or resumen.get('errores') else 0
+        return 1 if (resumen.get('error_entrega') or resumen.get('errores')
+                     or resumen.get('listado_incompleto')) else 0
     elif orden == 'programar':
         hora = argv[1] if len(argv) > 1 else '08:00'
         return subprocess.call(['schtasks', '/Create', '/F', '/TN', NOMBRE_TAREA, '/SC', 'DAILY',
