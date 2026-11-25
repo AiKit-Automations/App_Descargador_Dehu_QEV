@@ -1046,8 +1046,7 @@
             if (!n) { await showAlert('AiKit acepta el usuario y la contraseña. Guardados.', '✅'); return; }
             if (await showConfirm('Acceso a AiKit comprobado y guardado',
                     'Hay ' + n + ' ficheros ya bajados que no se han subido.\n\nSubirlos no pide nada a DEHÚ. ' +
-                    'Tarda unos 5 minutos por cada 100 ficheros' +
-                    (n >= 200 ? ' (estos, alrededor de ' + (n >= 1100 ? Math.round(n / 1200) + ' h' : Math.round(n / 20) + ' min') + ')' : '') +
+                    'Tardará ' + autoInfo.subida_estimada +
                     '. Se puede dejar el programa abierto y seguir trabajando; si se cierra, «Subir ahora» sigue donde se quedó.',
                     '✅', 'Subir ahora', 'Ahora no')) subirGuardado();
         });

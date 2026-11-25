@@ -57,6 +57,10 @@ MAX_4225_SEGUIDOS = 5
 # se deja de abrir pendientes hasta la próxima pasada y se sigue con lo realizado.
 CODIGO_TOPE_DIARIO_ACCESO = '4305'
 TAMANO_LOTE = 20
+# Lo que tarda el gestor de AiKit por fichero (un lote de 20, unos 2 minutos y
+# medio). Solo para decir en pantalla, antes de empezar, cuánto va a tardar una
+# subida; durante la subida el «faltan…» sale del ritmo que lleva de verdad.
+SEGUNDOS_POR_FICHERO = 7.5
 ESPERA_SONDEO = 10         # segundos entre consultas de progreso al gestor
 MAX_ESPERA_LOTE = 2 * 3600
 MAX_ESPERA_SUELTO = 15 * 60    # un fichero suelto, en el reintento de un lote fallido
@@ -943,12 +947,15 @@ def estado(base_dir) -> dict:
     reg = Registro(base_dir)
     pasadas = reg.datos.get('pasadas', [])
     acceso = _estado_acceso(cfg, reg)
+    por_subir = len(os.listdir(reg.por_subir))
     return {
         **{k: v for k, v in acceso.items() if k != 'motivo'},
         'acceso_falta': acceso['motivo'],
         'gestor_usuario': cfg['gestor_usuario'],
         'aceptar_notificaciones_pendientes': cfg['aceptar_notificaciones_pendientes'],
-        'quedan_por_subir': len(os.listdir(reg.por_subir)),
+        'quedan_por_subir': por_subir,
+        # En llano («unos 8 min», «unas 3 h»); vacío si no hay nada que subir.
+        'subida_estimada': _duracion_llana(SEGUNDOS_POR_FICHERO * por_subir) if por_subir else '',
         'ultima_pasada': pasadas[-1] if pasadas else None,
         'destino': GESTOR_URL,
         'version': VERSION,

@@ -978,3 +978,15 @@ def test_si_dehu_no_responde_lo_ya_bajado_se_sube_igual(entorno):
     assert r['entregados'] == 9 and entorno.por_subir() == [] and r['errores'] == 1
     assert GestorFalso.pendientes == []             # sin listado no se envía lista de pendientes
     assert r['mensaje'].startswith('No se ha podido bajar de DEHÚ (') and r['mensaje'].endswith('9 subidos a AiKit.')
+
+
+def test_estado_dice_cuanto_tardara_la_subida_de_lo_guardado(entorno):
+    """Antes de subir, la pantalla dice lo que tardarán LOS ficheros que hay, en llano."""
+    por_subir = auto.Registro(entorno.base).por_subir
+    assert auto.estado(entorno.base)['subida_estimada'] == ''          # nada guardado: no se promete nada
+    for i in range(60):
+        open(os.path.join(por_subir, f'N{i:04d}.zip'), 'wb').close()
+    assert auto.estado(entorno.base)['subida_estimada'] == 'unos 8 min'        # 60 x 7,5 s
+    for i in range(60, 1356):
+        open(os.path.join(por_subir, f'N{i:04d}.zip'), 'wb').close()
+    assert auto.estado(entorno.base)['subida_estimada'] == 'unas 3 h'          # lo que tiene QEV guardado
