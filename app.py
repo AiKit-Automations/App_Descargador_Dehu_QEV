@@ -63,6 +63,7 @@ dehu_estado = {
     'progreso_total': 0,
     'resultado': None,
     'zip_path': '',
+    'fase': '',     # qué está haciendo la pasada «todo lo de Red.es», en palabras llanas
 }
 dehu_lock = threading.Lock()
 
@@ -546,6 +547,7 @@ def dehu_estado_api():
             'progreso_actual': dehu_estado['progreso_actual'],
             'progreso_total': dehu_estado['progreso_total'],
             'resultado': dehu_estado['resultado'],
+            'fase': dehu_estado['fase'],
             'zip_listo': bool(dehu_estado.get('zip_path')),
         }
     return jsonify(data)
@@ -569,13 +571,25 @@ def dehu_descargar_zip():
 # TODO LO DE RED.ES (auto.py): un botón, sin elegir
 # ══════════════════════════════════════════════════════════════════
 
+def _auto_log(msg):
+    """Lo que dice una pasada: a la pantalla y a outputs/auto/pasadas.log."""
+    _dehu_log(msg)
+    auto.anotar_pasada(EXECUTABLE_DIR, msg)
+
+
+def _auto_avance(texto, hechos, total):
+    """Lo que la pantalla enseña mientras dura una pasada."""
+    with dehu_lock:
+        dehu_estado.update(fase=texto, progreso_actual=hechos, progreso_total=total)
+
+
 def _correr_auto(trabajo):
     """Thread: ejecuta `trabajo()` (una pasada de auto.py, que devuelve su
     resumen) y deja el resultado para la pantalla."""
     try:
         with dehu_lock:
             dehu_estado.update(procesando=True, logs=[], progreso_actual=0,
-                               progreso_total=0, resultado=None, zip_path='')
+                               progreso_total=0, resultado=None, zip_path='', fase='Empezando…')
         resumen = trabajo()
         with dehu_lock:
             dehu_estado['resultado'] = {
@@ -583,6 +597,8 @@ def _correr_auto(trabajo):
                 'entregados': resumen.get('entregados', 0),
                 'errores': resumen.get('errores', 0) + (1 if resumen.get('error_entrega') else 0),
                 'acceso_no_vale': bool(resumen.get('acceso_no_vale')),
+                'sin_acceso': bool(resumen.get('sin_acceso')),
+                'mensaje': resumen.get('mensaje', ''),
             }
     except Exception as e:
         _dehu_log(f'[ERROR] Error crítico: {str(e)}')
@@ -590,28 +606,28 @@ def _correr_auto(trabajo):
             dehu_estado['resultado'] = {'descargados': 0, 'errores': 1}
     finally:
         with dehu_lock:
-            dehu_estado['procesando'] = False
+            dehu_estado.update(procesando=False, fase='')
 
 
 def ejecutar_todo_redes(cert_context):
     """Thread: baja todo lo de Red.es y lo entrega al gestor de AiKit."""
     _correr_auto(lambda: auto.ejecutar(_crear_dehu_client(cert_context=cert_context),
-                                       EXECUTABLE_DIR, _dehu_log))
+                                       EXECUTABLE_DIR, _auto_log, _auto_avance))
 
 
 def ejecutar_subida_guardada():
     """Thread: entrega al gestor lo que ya está bajado. No pide nada a DEHÚ."""
-    _correr_auto(lambda: auto.subir_guardado(EXECUTABLE_DIR, _dehu_log))
+    _correr_auto(lambda: auto.subir_guardado(EXECUTABLE_DIR, _auto_log, _auto_avance))
 
 
-def _arrancar_auto(objetivo, *args):
-    """Arranca una pasada si la sesión, el acceso a AiKit y el estado lo permiten."""
+def _arrancar_auto(objetivo, *args, pide_acceso=False):
+    """Arranca una pasada si la sesión y el estado lo permiten. Bajar no
+    depende del acceso a AiKit; «subir lo guardado» (`pide_acceso`) sí."""
     if 'nif' not in session:
         return jsonify({'exito': False, 'mensaje': 'Sesión no iniciada'}), 401
-    # Sin un acceso que AiKit haya aceptado no se arranca: nada de bajar sin poder subir.
-    if not auto.estado(EXECUTABLE_DIR)['acceso_listo']:
+    if pide_acceso and not auto.estado(EXECUTABLE_DIR)['acceso_listo']:
         return jsonify({'exito': False, 'falta_acceso': True,
-                        'mensaje': 'Antes hay que configurar el acceso a AiKit.'}), 400
+                        'mensaje': 'Para subir hay que configurar antes el acceso a AiKit.'}), 400
     with dehu_lock:
         if dehu_estado['procesando']:
             return jsonify({'exito': False, 'mensaje': 'Ya hay un proceso en ejecución'}), 400
@@ -641,6 +657,27 @@ def auto_acceso():
     return jsonify({**auto.estado(EXECUTABLE_DIR), **r}), (200 if r['exito'] else 400)
 
 
+@app.route('/api/auto/paquete', methods=['POST'])
+def auto_paquete():
+    """Salida de emergencia: prepara un ZIP con lo que espera subida para
+    enviarlo a AiKit a mano, y abre su carpeta. No necesita acceso a AiKit."""
+    if 'nif' not in session:
+        return jsonify({'exito': False, 'mensaje': 'Sesión no iniciada'}), 401
+    with dehu_lock:
+        if dehu_estado['procesando']:
+            return jsonify({'exito': False, 'mensaje': 'Hay una pasada en marcha. Espera a que termine.'}), 400
+    try:
+        r = auto.preparar_envio_a_mano(EXECUTABLE_DIR)
+    except OSError as e:
+        return jsonify({'exito': False, 'mensaje': f'No se ha podido preparar el ZIP ({e}).'}), 500
+    if sys.platform == 'win32':
+        try:
+            os.startfile(r['carpeta'])      # el Explorador de Windows, en la carpeta del paquete
+        except OSError:
+            pass
+    return jsonify({'exito': True, **r})
+
+
 @app.route('/api/auto/ejecutar', methods=['POST'])
 def auto_ejecutar():
     return _arrancar_auto(ejecutar_todo_redes, _cert_de_sesion())
@@ -648,7 +685,7 @@ def auto_ejecutar():
 
 @app.route('/api/auto/subir', methods=['POST'])
 def auto_subir():
-    return _arrancar_auto(ejecutar_subida_guardada)
+    return _arrancar_auto(ejecutar_subida_guardada, pide_acceso=True)
 
 
 # ══════════════════════════════════════════════════════════════════

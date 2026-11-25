@@ -21,6 +21,7 @@ Documento para revisión: REVISION_IT.md.
 """
 
 import base64
+import contextlib
 import datetime
 import hashlib
 import json
@@ -58,7 +59,25 @@ CODIGO_TOPE_DIARIO_ACCESO = '4305'
 TAMANO_LOTE = 20
 ESPERA_SONDEO = 10         # segundos entre consultas de progreso al gestor
 MAX_ESPERA_LOTE = 2 * 3600
+MAX_ESPERA_SUELTO = 15 * 60    # un fichero suelto, en el reintento de un lote fallido
+MAX_SONDEOS_FALLIDOS = 6       # consultas de progreso seguidas sin respuesta (un minuto)
+# El gestor cierra la sesión a las 12 horas de entrar, se use o no. La subida
+# de mucho acumulado puede durar más: se entra de nuevo entre lotes mucho
+# antes (6 h, más las 2 h que puede durar un lote, quedan lejos de las 12).
+RENOVAR_SESION_SEGUNDOS = 6 * 3600
+# Lotes seguidos sin entrar que paran la subida (algo general falla), y las
+# pausas antes del siguiente intento (un reinicio del gestor dura un par de minutos).
+MAX_FALLOS_SEGUIDOS = 3
+ESPERAS_TRAS_FALLO = (30, 120)
 NOMBRE_TAREA = 'DescargadorDehuQEV-TodoRedes'
+VERSION = '2026-11-25'     # la que enseña la pantalla y viaja en el diagnóstico
+# Paquete para enviar a mano: partes de este tamaño como mucho (un ZIP de
+# DEHÚ pesa unos 200 KB; 1.400 son unos 300 MB, tres partes).
+MAX_BYTES_PARTE_A_MANO = 100 * 1024 * 1024
+CARPETA_A_MANO = 'para_enviar_a_aikit'
+# Lo único que entra en el diagnóstico. La configuración (auto_config.json:
+# el usuario, las contraseñas cifradas, la ruta del certificado) no entra nunca.
+FICHEROS_DIAGNOSTICO = ('registro.json', 'enviado.log', 'pasadas.log', 'pendientes_informadas.json')
 
 CONFIG_POR_DEFECTO = {
     # Aceptar una NOTIFICACIÓN pendiente es comparecer: tiene efecto legal y
@@ -81,6 +100,16 @@ class EntregaError(Exception):
 
 class AccesoRechazado(EntregaError):
     """El gestor no reconoce el usuario o la contraseña (HTTP 401)."""
+
+
+class GestorParado(EntregaError):
+    """El gestor avisa de que ahora no puede procesar nada (su comprobación
+    de Claude falla): no tiene sentido seguir subiendo lotes."""
+
+
+class LoteSinTerminar(EntregaError):
+    """El gestor sigue con el lote pasado el tiempo máximo: no se reintenta en
+    esta pasada, para no dárselo dos veces a la vez."""
 
 
 # ══════════════════════════════════════════════════════════════════
@@ -152,6 +181,15 @@ def _escribir_json(ruta, datos) -> None:
 
 def _ahora() -> str:
     return datetime.datetime.now().isoformat(timespec='seconds')
+
+
+def anotar_pasada(base_dir, msg) -> None:
+    """Añade a outputs/auto/pasadas.log lo que la pasada va diciendo, se
+    lance desde la pantalla o sin ella: es lo que permite ver después qué pasó."""
+    carpeta = os.path.join(base_dir, 'outputs', 'auto')
+    os.makedirs(carpeta, exist_ok=True)
+    with open(os.path.join(carpeta, 'pasadas.log'), 'a', encoding='utf-8') as f:
+        f.write(f'{_ahora()} {msg}\n')
 
 
 def _sha256(ruta) -> str:
@@ -478,74 +516,233 @@ def informar_pendientes(s, reg: Registro, informe: dict, log) -> dict:
     return {'pendientes_informadas': len(informe['pendientes'])}
 
 
-def entregar_todo(cfg: dict, reg: Registro, log, password: str, informe_pendientes: dict = None) -> dict:
-    """Sube al gestor todo lo que hay en por_subir, por lotes. Un lote que el
-    gestor no procesa se queda en por_subir y se reintenta en la próxima pasada.
-    Si se da `informe_pendientes`, se envía antes, en la misma sesión."""
-    r = {'entregados': 0, 'por_entregar': 0, 'errores_gestor': 0}
-    pendientes = sorted(f for f in os.listdir(reg.por_subir) if f.lower().endswith('.zip'))
-    if not pendientes and informe_pendientes is None:
-        return r
-    r['por_entregar'] = len(pendientes)
+class _SesionGestor:
+    """La sesión con el gestor durante una subida. Se entra de nuevo sola
+    cuando lleva muchas horas (el gestor la cierra a las 12) y después de un
+    lote fallido, para empezar el siguiente con una sesión limpia."""
 
-    s = requests.Session()
+    def __init__(self, usuario: str, password: str, log):
+        self._usuario, self._password, self._log = usuario, password, log
+        self.s = None
+        self.entrar()
+
+    def entrar(self, motivo: str = '') -> None:
+        self.salir()
+        s = requests.Session()
+        _entrar(s, self._usuario, self._password)
+        self.s, self._desde = s, time.monotonic()
+        if motivo:
+            self._log(f'[INFO] Se ha entrado de nuevo en AiKit ({motivo}).')
+
+    def al_dia(self) -> None:
+        if self.s is None:
+            self.entrar('sesión nueva tras un lote que no ha entrado')
+        elif time.monotonic() - self._desde > RENOVAR_SESION_SEGUNDOS:
+            self.entrar('la sesión llevaba muchas horas abierta')
+
+    def salir(self) -> None:
+        if self.s is not None:
+            _salir(self.s)
+            self.s = None
+
+
+def _entero(valor) -> int:
     try:
-        _entrar(s, cfg['gestor_usuario'], password)
+        return int(valor or 0)
+    except (TypeError, ValueError):
+        return 0
 
-        if informe_pendientes is not None:
-            r.update(informar_pendientes(s, reg, informe_pendientes, log))
 
-        for i in range(0, len(pendientes), TAMANO_LOTE):
-            lote = [os.path.join(reg.por_subir, n) for n in pendientes[i:i + TAMANO_LOTE]]
-            abiertos = [open(ruta, 'rb') for ruta in lote]
-            try:
-                subida = _json(s.post(
-                    f'{GESTOR_URL}/api/upload-zips', timeout=900, allow_redirects=False,
-                    files=[('zips', (os.path.basename(f.name), f, 'application/zip')) for f in abiertos],
-                ), 'subida')
-            finally:
-                for f in abiertos:
-                    f.close()
-            _json(s.post(f'{GESTOR_URL}/procesar', timeout=60, allow_redirects=False,
-                         json={'carpeta_input': subida['carpeta'], 'origen': 'manual'}), 'procesar')
-
-            fin = _esperar_lote(s)
-            if fin.get('error_claude'):
-                raise EntregaError(f'el gestor no ha procesado el lote: {fin["error_claude"]}')
-
-            for ruta in lote:
-                reg.anotar_envio_log(f'{GESTOR_URL}/api/upload-zips', ruta, 'entregado')
-                shutil.move(ruta, os.path.join(reg.entregado, os.path.basename(ruta)))
-            reg.anotar_entrega(os.path.basename(ruta) for ruta in lote)
-            r['entregados'] += len(lote)
-            r['errores_gestor'] += int(fin.get('errores') or 0)
-            log(f'[OK] Lote entregado: {len(lote)} ZIP, van {r["entregados"]} de {len(pendientes)} '
-                f'(el gestor clasifica {fin.get("exitosos", "?")}, falla {fin.get("errores", "?")})')
+def _subir(s, rutas: list):
+    abiertos = [open(ruta, 'rb') for ruta in rutas]
+    try:
+        return s.post(f'{GESTOR_URL}/api/upload-zips', timeout=900, allow_redirects=False,
+                      files=[('zips', (os.path.basename(f.name), f, 'application/zip')) for f in abiertos])
     finally:
-        _salir(s)
-    r['por_entregar'] -= r['entregados']
-    return r
+        for f in abiertos:
+            f.close()
 
 
-def _esperar_lote(s) -> dict:
-    limite = time.time() + MAX_ESPERA_LOTE
-    quieto = 0
+def _entregar_lote(sesion: _SesionGestor, rutas: list, max_espera: int) -> dict:
+    """Sube un lote y espera a que el gestor lo procese. Devuelve su progreso
+    final. Lanza EntregaError si el gestor no confirma el lote entero."""
+    resp = _subir(sesion.s, rutas)
+    if resp.status_code == 401:
+        # La sesión ya no vale (caducada, o el gestor la ha cerrado). Aún no se
+        # ha procesado nada de este lote: se entra de nuevo y se repite la subida.
+        sesion.entrar('AiKit había cerrado la sesión')
+        resp = _subir(sesion.s, rutas)
+    subida = _json(resp, 'subida')
+    _json(sesion.s.post(f'{GESTOR_URL}/procesar', timeout=60, allow_redirects=False,
+                        json={'carpeta_input': subida['carpeta'], 'origen': 'manual'}), 'procesar')
+    fin = _esperar_lote(sesion.s, max_espera)
+    if fin.get('error_claude'):
+        raise GestorParado(f'AiKit no puede procesar ahora: {fin["error_claude"]}')
+    # Entregado = el gestor dice que ha pasado por todos los ficheros del lote.
+    # Un gestor reiniciado a mitad responde «parado» con todo a cero: no vale.
+    total = _entero(fin.get('total'))
+    if not total or _entero(fin.get('exitosos')) + _entero(fin.get('errores')) < total:
+        raise EntregaError('el gestor no confirma haber procesado el lote')
+    return fin
+
+
+def _esperar_lote(s, max_espera: int) -> dict:
+    limite = time.time() + max_espera
+    quieto = sin_respuesta = 0
     while time.time() < limite:
         time.sleep(ESPERA_SONDEO)
-        p = _json(s.get(f'{GESTOR_URL}/progreso', timeout=60, allow_redirects=False), 'progreso')
+        try:
+            p = _json(s.get(f'{GESTOR_URL}/progreso', timeout=60, allow_redirects=False), 'progreso')
+        except requests.RequestException:
+            # Un corte breve de la red no da el lote por perdido: se sigue preguntando.
+            sin_respuesta += 1
+            if sin_respuesta >= MAX_SONDEOS_FALLIDOS:
+                raise
+            continue
+        sin_respuesta = 0
         # El gestor arranca el lote en un hilo: dos lecturas seguidas «parado»
         # evitan dar por terminado un lote que aún no había empezado.
         quieto = 0 if p.get('procesando') else quieto + 1
         if quieto >= 2:
             return p
-    raise EntregaError('el gestor no termina el lote en el tiempo máximo')
+    raise LoteSinTerminar('el gestor no termina el lote en el tiempo máximo')
+
+
+def _duracion_llana(segundos: float) -> str:
+    minutos = max(1, round(segundos / 60))
+    if minutos < 90:
+        return f'unos {minutos} min'
+    return f'unas {round(minutos / 60)} h'
+
+
+def entregar_todo(cfg: dict, reg: Registro, log, password: str, informe_pendientes: dict = None,
+                  avance=None) -> dict:
+    """Sube al gestor todo lo que hay en por_subir, por lotes, y devuelve el
+    resumen. Los fallos de entrega no se lanzan: quedan en `error_entrega`.
+
+    Nada se da por entregado sin que el gestor confirme el lote entero. Un
+    lote que el gestor no procesa se queda en por_subir y la subida sigue con
+    los demás; al final se reintenta fichero a fichero, para que uno que el
+    gestor no admite no retenga a los otros. Si fallan MAX_FALLOS_SEGUIDOS
+    lotes seguidos, o el gestor avisa de que no puede procesar, se deja de
+    subir: lo que falta sigue en por_subir para la próxima vez.
+    Si se da `informe_pendientes`, se envía antes, en la misma sesión.
+    `avance(texto, hechos, total)` recibe el progreso para la pantalla."""
+    r = {'entregados': 0, 'por_entregar': 0, 'errores_gestor': 0}
+    pendientes = sorted(f for f in os.listdir(reg.por_subir) if f.lower().endswith('.zip'))
+    if not pendientes and informe_pendientes is None:
+        return r
+    total = r['por_entregar'] = len(pendientes)
+    avance = avance or (lambda *_: None)
+    inicio = time.monotonic()
+    apartados = []      # ficheros de lotes fallidos, para reintentar uno a uno
+    sin_procesar = []   # los que quedan sin entrar tras su último intento
+    seguidos = 0
+    sesion = None
+
+    def informar_avance():
+        texto = f'Subiendo a AiKit: {r["entregados"]} de {total} ficheros'
+        if r['entregados']:
+            ritmo = (time.monotonic() - inicio) / r['entregados']
+            faltan = total - r['entregados'] - len(sin_procesar)
+            if faltan > 0:
+                texto += f' (faltan {_duracion_llana(ritmo * faltan)})'
+        avance(texto + '. Si se cierra el programa no se pierde nada: «Subir ahora» sigue donde se quedó.',
+               r['entregados'], total)
+
+    def entregar(nombres: list, max_espera: int, primer_intento: bool) -> None:
+        nonlocal seguidos
+        rutas = [os.path.join(reg.por_subir, n) for n in nombres]
+        try:
+            sesion.al_dia()
+            fin = _entregar_lote(sesion, rutas, max_espera)
+        except (AccesoRechazado, GestorParado):
+            raise
+        except (EntregaError, requests.RequestException) as e:
+            sin_red = isinstance(e, requests.RequestException)
+            motivo = f'sin conexión con AiKit ({type(e).__name__})' if sin_red else str(e)
+            # Lo que sigue en manos del gestor no se le vuelve a dar en esta pasada.
+            if primer_intento and not isinstance(e, LoteSinTerminar):
+                apartados.extend(nombres)
+            else:
+                sin_procesar.extend(nombres)
+            log(f'[WARN] AiKit no ha procesado {len(nombres)} fichero(s): {motivo}. '
+                f'Siguen guardados en este ordenador.')
+            sesion.salir()      # el siguiente lote entra con una sesión nueva
+            # En el reintento uno a uno, un fichero que el gestor no admite no
+            # dice nada del siguiente: solo cuentan los cortes de conexión.
+            if primer_intento or sin_red:
+                seguidos += 1
+                if seguidos >= MAX_FALLOS_SEGUIDOS:
+                    raise GestorParado(f'AiKit no ha procesado {seguidos} intentos seguidos (el último: {motivo}). '
+                                       f'Se deja de subir por ahora.')
+                time.sleep(ESPERAS_TRAS_FALLO[min(seguidos, len(ESPERAS_TRAS_FALLO)) - 1])
+            informar_avance()
+            return
+        seguidos = 0
+        for ruta in rutas:
+            reg.anotar_envio_log(f'{GESTOR_URL}/api/upload-zips', ruta, 'entregado')
+            shutil.move(ruta, os.path.join(reg.entregado, os.path.basename(ruta)))
+        reg.anotar_entrega(nombres)
+        r['entregados'] += len(nombres)
+        r['errores_gestor'] += _entero(fin.get('errores'))
+        log(f'[OK] Subidos {r["entregados"]} de {total} ficheros '
+            f'(de estos {len(nombres)}, AiKit clasifica {fin.get("exitosos", "?")} y falla {fin.get("errores", "?")})')
+        informar_avance()
+
+    try:
+        sesion = _SesionGestor(cfg['gestor_usuario'], password, log)
+        if informe_pendientes is not None:
+            r.update(informar_pendientes(sesion.s, reg, informe_pendientes, log))
+        informar_avance()
+        for i in range(0, total, TAMANO_LOTE):
+            entregar(pendientes[i:i + TAMANO_LOTE], MAX_ESPERA_LOTE, primer_intento=True)
+        if apartados:
+            log(f'[INFO] Reintento, uno a uno, de {len(apartados)} ficheros de lotes que no han entrado.')
+        for nombre in apartados:
+            entregar([nombre], MAX_ESPERA_SUELTO, primer_intento=False)
+    except AccesoRechazado:
+        r['acceso_no_vale'] = True
+        r['error_entrega'] = 'AiKit no reconoce el usuario o la contraseña guardados.'
+    except requests.RequestException as e:
+        r['error_entrega'] = f'No hay conexión con AiKit ({type(e).__name__}).'
+    except EntregaError as e:
+        r['error_entrega'] = str(e)
+    finally:
+        if sesion is not None:
+            sesion.salir()
+
+    r['por_entregar'] = total - r['entregados']
+    if sin_procesar:
+        r['sin_procesar'] = sorted(sin_procesar)[:50]
+        log(f'[WARN] AiKit no ha procesado estos {len(sin_procesar)} ficheros: '
+            f'{", ".join(sorted(sin_procesar)[:20])}{"…" if len(sin_procesar) > 20 else ""}')
+        r.setdefault('error_entrega', f'AiKit no ha procesado {len(sin_procesar)} fichero(s).')
+    return r
 
 
 # ══════════════════════════════════════════════════════════════════
 # Pasada completa
 # ══════════════════════════════════════════════════════════════════
 
-def ejecutar(client, base_dir, log) -> dict:
+@contextlib.contextmanager
+def _sin_suspension():
+    """Mientras dura una pasada, Windows no suspende el ordenador por
+    inactividad: una subida larga se cortaría. No cambia ninguna configuración;
+    al terminar, o al cerrar el programa, todo queda como estaba."""
+    if sys.platform != 'win32':
+        yield
+        return
+    import ctypes
+    ES_CONTINUOUS, ES_SYSTEM_REQUIRED = 0x80000000, 0x00000001
+    ctypes.windll.kernel32.SetThreadExecutionState(ES_CONTINUOUS | ES_SYSTEM_REQUIRED)
+    try:
+        yield
+    finally:
+        ctypes.windll.kernel32.SetThreadExecutionState(ES_CONTINUOUS)
+
+
+def ejecutar(client, base_dir, log, avance=None) -> dict:
     """Baja todo lo de Red.es y lo entrega. Devuelve el resumen de la pasada."""
     cfg = leer_config(base_dir)
     reg = Registro(base_dir)
@@ -553,45 +750,57 @@ def ejecutar(client, base_dir, log) -> dict:
     log(f'[INFO] ========== TODO LO DE RED.ES — aceptar notificaciones pendientes: '
         f'{"SÍ" if cfg["aceptar_notificaciones_pendientes"] else "NO"} ==========')
 
-    bajado = bajar_todo(client, cfg, reg, log)
-    # La lista no se guarda en el resumen de la pasada: va en su propio fichero.
-    informe = {'generado_en': _ahora(), 'listado_completo': bajado.pop('pendientes_listado_completo'),
-               'pendientes': bajado.pop('pendientes_lista')}
-    resumen.update(bajado)
-    return _entregar_y_cerrar(cfg, reg, log, resumen, informe)
+    with _sin_suspension():
+        if avance:
+            avance('Bajando de DEHÚ lo que ha enviado Red.es…', 0, 0)
+        bajado = bajar_todo(client, cfg, reg, log)
+        # La lista no se guarda en el resumen de la pasada: va en su propio fichero.
+        informe = {'generado_en': _ahora(), 'listado_completo': bajado.pop('pendientes_listado_completo'),
+                   'pendientes': bajado.pop('pendientes_lista')}
+        resumen.update(bajado)
+        return _entregar_y_cerrar(cfg, reg, log, resumen, informe, avance)
 
 
-def subir_guardado(base_dir, log) -> dict:
+def subir_guardado(base_dir, log, avance=None) -> dict:
     """Entrega lo que ya está bajado en por_subir. No pide nada a DEHÚ ni
     envía lista de pendientes (no hay listado nuevo del que sacarla)."""
     resumen = {'inicio': _ahora(), 'solo_entrega': True}
     log('[INFO] ========== SUBIR A AIKIT LO YA BAJADO (no se pide nada a DEHÚ) ==========')
-    return _entregar_y_cerrar(leer_config(base_dir), Registro(base_dir), log, resumen, None)
+    with _sin_suspension():
+        return _entregar_y_cerrar(leer_config(base_dir), Registro(base_dir), log, resumen, None, avance)
 
 
-def _entregar_y_cerrar(cfg: dict, reg: Registro, log, resumen: dict, informe) -> dict:
-    """Entrega lo que hay en por_subir y anota la pasada en el registro."""
-    if not cfg['gestor_usuario'] or not cfg['gestor_password_dpapi']:
-        resumen['error_entrega'] = 'Falta configurar el acceso a AiKit.'
-    else:
-        # `acceso_no_vale`: la pantalla lo dice con palabras llanas y ofrece
-        # configurar el acceso de nuevo.
-        try:
-            resumen.update(entregar_todo(cfg, reg, log, desproteger(cfg['gestor_password_dpapi']), informe))
-        except AccesoRechazado:
+def _entregar_y_cerrar(cfg: dict, reg: Registro, log, resumen: dict, informe, avance=None) -> dict:
+    """Entrega lo que hay en por_subir y anota la pasada en el registro.
+
+    Bajar no depende del acceso a AiKit: sin un acceso que AiKit haya
+    aceptado, lo bajado se queda guardado y la pasada dice que no se ha
+    subido y por qué. Tampoco se envía la lista de pendientes; queda escrita
+    en pendientes_informadas.json."""
+    if informe is not None:     # se envíe o no, la lista queda escrita en este ordenador
+        _escribir_json(os.path.join(reg.dir, 'pendientes_informadas.json'), informe)
+    acceso = _estado_acceso(cfg, reg)
+    if not acceso['acceso_listo']:
+        # `sin_acceso`: no se ha intentado subir. `acceso_no_vale` se conserva
+        # para que la pantalla siga diciendo que AiKit rechazó lo guardado.
+        resumen.update(sin_acceso=True, error_entrega=acceso['motivo'])
+        if acceso['acceso_no_vale']:
             resumen['acceso_no_vale'] = True
-            resumen['error_entrega'] = 'AiKit no reconoce el usuario o la contraseña guardados.'
+    else:
+        try:
+            password = desproteger(cfg['gestor_password_dpapi'])
         except RuntimeError:        # DPAPI: guardada con otra cuenta de Windows o en otro ordenador
             resumen['acceso_no_vale'] = True
             resumen['error_entrega'] = ('La contraseña de AiKit guardada no se puede leer con esta cuenta '
                                         'de Windows en este ordenador.')
-        except (EntregaError, requests.RequestException) as e:
-            resumen['error_entrega'] = str(e)
-    if resumen.get('error_entrega'):
-        log(f'[ERROR] Entrega: {resumen["error_entrega"]} Lo bajado queda guardado y se reintenta.')
+        else:
+            resumen.update(entregar_todo(cfg, reg, log, password, informe, avance))
 
     resumen['fin'] = _ahora()
     resumen['quedan_por_subir'] = len(os.listdir(reg.por_subir))
+    resumen['mensaje'] = _mensaje_final(resumen)
+    if resumen.get('error_entrega'):
+        log(f'[ERROR] Entrega: {resumen["error_entrega"]} Lo que no ha subido sigue guardado en este ordenador.')
     reg.datos['pasadas'] = (reg.datos.get('pasadas', []) + [resumen])[-60:]
     reg.guardar()
     log(f'[INFO] Pasada terminada: {resumen.get("bajados", 0)} bajados, '
@@ -599,27 +808,136 @@ def _entregar_y_cerrar(cfg: dict, reg: Registro, log, resumen: dict, informe) ->
     return resumen
 
 
+def _mensaje_final(resumen: dict) -> str:
+    """Lo que la pantalla dice al terminar, en palabras llanas."""
+    quedan = resumen['quedan_por_subir']
+    partes = [] if resumen.get('solo_entrega') else [f'{resumen.get("bajados", 0)} bajados de DEHÚ']
+    if not resumen.get('sin_acceso'):
+        partes.append(f'{resumen.get("entregados", 0)} subidos a AiKit')
+    texto = ', '.join(partes) + '.'
+    if resumen.get('errores'):
+        texto += f' {resumen["errores"]} envíos de DEHÚ han dado error y se piden otra vez en la próxima pasada.'
+    if resumen.get('sin_acceso'):
+        texto += (f' No se ha subido nada a AiKit: {resumen["error_entrega"]} '
+                  f'Hay {quedan} ficheros guardados en este ordenador esperando. Para subirlos: '
+                  f'«Configurar acceso a AiKit» y después «Subir ahora». Si corre prisa, '
+                  f'«Preparar un ZIP para enviarlo a mano».')
+    elif quedan:
+        texto += (f' {quedan} ficheros siguen guardados en este ordenador sin subir: '
+                  f'{resumen.get("error_entrega") or "no ha dado tiempo."} '
+                  f'No se ha perdido nada; «Subir ahora» lo intenta de nuevo. Si corre prisa, '
+                  f'«Preparar un ZIP para enviarlo a mano».')
+    elif resumen.get('error_entrega'):
+        texto += ' ' + resumen['error_entrega']
+    return texto
+
+
+# ══════════════════════════════════════════════════════════════════
+# Salida de emergencia: un paquete para enviar a mano
+# ══════════════════════════════════════════════════════════════════
+
+def preparar_envio_a_mano(base_dir) -> dict:
+    """Copia todo lo que espera en por_subir a uno o varios ZIP que QEV puede
+    enviar a AiKit por otro camino cuando la subida no funciona, más un ZIP
+    de diagnóstico. No llama a DEHÚ ni al gestor y no necesita acceso.
+
+    No cambia nada de lo guardado: los ficheros siguen en por_subir y la
+    próxima subida los envía igual (el gestor admite recibir dos veces la
+    misma notificación). Cada vez se escribe en una carpeta nueva.
+    Devuelve {'carpeta', 'partes', 'diagnostico', 'ficheros', 'bytes'}."""
+    reg = Registro(base_dir)
+    nombres = sorted(f for f in os.listdir(reg.por_subir) if f.lower().endswith('.zip'))
+    sello = datetime.datetime.now().strftime('%Y-%m-%d_%H%M%S')
+    carpeta = os.path.join(base_dir, CARPETA_A_MANO, sello)
+    os.makedirs(carpeta)
+
+    # Reparto en partes por tamaño. Los ZIP de DEHÚ van en la raíz de cada
+    # parte, sin recomprimir, para poder cargarla tal cual en el gestor.
+    partes, peso = [[]], 0
+    for nombre in nombres:
+        tam = os.path.getsize(os.path.join(reg.por_subir, nombre))
+        if partes[-1] and peso + tam > MAX_BYTES_PARTE_A_MANO:
+            partes.append([])
+            peso = 0
+        partes[-1].append(nombre)
+        peso += tam
+    partes = [p for p in partes if p]
+
+    contenido = [f'Descargador DEHÚ {VERSION}. Paquete preparado el {_ahora()}.',
+                 f'{len(nombres)} ficheros de notificaciones en {len(partes)} parte(s). '
+                 f'Son copias: los originales siguen en este ordenador, sin marcar como subidos.', '',
+                 'parte\tfichero\tbytes\tsha256']
+    escritas, total_bytes = [], 0
+    for n, parte in enumerate(partes, start=1):
+        sufijo = f'_parte_{n}_de_{len(partes)}' if len(partes) > 1 else ''
+        ruta_parte = os.path.join(carpeta, f'QEV_para_AiKit_{sello}{sufijo}.zip')
+        with zipfile.ZipFile(ruta_parte, 'w', zipfile.ZIP_STORED) as zf:
+            for nombre in parte:
+                origen = os.path.join(reg.por_subir, nombre)
+                zf.write(origen, nombre)
+                contenido.append(f'{n}\t{nombre}\t{os.path.getsize(origen)}\t{_sha256(origen)}')
+        escritas.append(os.path.basename(ruta_parte))
+        total_bytes += os.path.getsize(ruta_parte)
+
+    diagnostico = f'QEV_diagnostico_{sello}.zip'
+    with zipfile.ZipFile(os.path.join(carpeta, diagnostico), 'w', zipfile.ZIP_DEFLATED) as zf:
+        zf.writestr('CONTENIDO.txt', '\n'.join(contenido) + '\n')
+        for nombre in FICHEROS_DIAGNOSTICO:
+            ruta = os.path.join(reg.dir, nombre)
+            if os.path.isfile(ruta):
+                zf.write(ruta, nombre)
+
+    r = {'carpeta': carpeta, 'partes': escritas, 'diagnostico': diagnostico,
+         'ficheros': len(nombres), 'bytes': total_bytes}
+    reg.datos['paquetes_a_mano'] = (reg.datos.get('paquetes_a_mano', []) + [
+        {'preparado_en': _ahora(), 'carpeta': carpeta, 'ficheros': len(nombres), 'partes': escritas}])[-60:]
+    reg.guardar()
+    anotar_pasada(base_dir, f'[INFO] Paquete para enviar a mano: {len(nombres)} ficheros en {len(escritas)} parte(s), '
+                            f'en {carpeta}. No se ha marcado nada como subido.')
+    return r
+
+
+def _estado_acceso(cfg: dict, reg: Registro) -> dict:
+    """Si hay un acceso a AiKit con el que se puede subir, y si no, por qué."""
+    pasadas = reg.datos.get('pasadas', [])
+    ultima = pasadas[-1] if pasadas else {}
+    configurado = bool(cfg['gestor_usuario'] and cfg['gestor_password_dpapi'])
+    comprobado = cfg['gestor_comprobado_en'] if configurado else ''
+    # No vale: la última pasada no pudo entrar, después de la última comprobación.
+    no_vale = bool(ultima.get('acceso_no_vale')) and ultima.get('fin', '') > comprobado
+    if not configurado:
+        motivo = 'Falta configurar el acceso a AiKit.'
+    elif no_vale:
+        motivo = 'AiKit no ha aceptado el usuario o la contraseña guardados.'
+    elif not comprobado:
+        motivo = 'El acceso a AiKit está guardado pero sin comprobar.'
+    else:
+        motivo = ''
+    return {
+        'gestor_configurado': configurado,
+        'acceso_comprobado_en': comprobado,
+        'acceso_no_vale': no_vale,
+        # Solo se sube con un acceso que AiKit ha aceptado.
+        'acceso_listo': not motivo,
+        'motivo': motivo,
+    }
+
+
 def estado(base_dir) -> dict:
     """Lo que la pantalla enseña junto al botón."""
     cfg = leer_config(base_dir)
     reg = Registro(base_dir)
     pasadas = reg.datos.get('pasadas', [])
-    ultima = pasadas[-1] if pasadas else {}
-    configurado = bool(cfg['gestor_usuario'] and cfg['gestor_password_dpapi'])
-    comprobado = cfg['gestor_comprobado_en'] if configurado else ''
-    # No vale: la última entrega no pudo entrar, después de la última comprobación.
-    no_vale = bool(ultima.get('acceso_no_vale')) and ultima.get('fin', '') > comprobado
+    acceso = _estado_acceso(cfg, reg)
     return {
-        'gestor_configurado': configurado,
+        **{k: v for k, v in acceso.items() if k != 'motivo'},
+        'acceso_falta': acceso['motivo'],
         'gestor_usuario': cfg['gestor_usuario'],
-        'acceso_comprobado_en': comprobado,
-        'acceso_no_vale': no_vale,
-        # El botón solo arranca con un acceso que AiKit ha aceptado.
-        'acceso_listo': bool(comprobado) and not no_vale,
         'aceptar_notificaciones_pendientes': cfg['aceptar_notificaciones_pendientes'],
         'quedan_por_subir': len(os.listdir(reg.por_subir)),
         'ultima_pasada': pasadas[-1] if pasadas else None,
         'destino': GESTOR_URL,
+        'version': VERSION,
     }
 
 
@@ -686,9 +1004,7 @@ def main(argv, base_dir, crear_cliente) -> int:
         def log(msg):
             if sys.stdout:          # un .exe sin consola no tiene salida estándar
                 print(msg)
-            with open(os.path.join(base_dir, 'outputs', 'auto', 'pasadas.log'), 'a', encoding='utf-8') as f:
-                f.write(f'{_ahora()} {msg}\n')
-        Registro(base_dir)      # crea las carpetas antes del primer log
+            anotar_pasada(base_dir, msg)
         try:
             resumen = ejecutar(crear_cliente(cert_context_guardado(base_dir), log), base_dir, log)
         except Exception as e:

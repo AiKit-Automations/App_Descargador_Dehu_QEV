@@ -359,6 +359,12 @@
             <button class="btn btn-green" id="btnSubir" style="display:none;"></button>
             <div id="autoAcceso" style="margin-top:10px; font-size:13px; font-weight:600;"></div>
             <div id="autoEstado" style="margin-top:4px; font-size:13px; color:#555;"></div>
+            <!-- Salida de emergencia: no es el camino normal -->
+            <div style="margin-top:10px; font-size:12px; color:#666;">
+                ¿La subida no funciona y corre prisa?
+                <a href="#" id="btnPaquete" style="color:#1d4ed8;">Preparar un ZIP para enviarlo a mano</a>
+                <span id="autoVersion" style="float:right; color:#999;"></span>
+            </div>
         </div>
 
         <!-- Tabs -->
@@ -971,6 +977,7 @@
                         ? '⚠️ El acceso a AiKit está guardado pero sin comprobar. Pulsa «Configurar acceso a AiKit».'
                         : '⚠️ Falta configurar el acceso a AiKit: sin él no se puede subir nada.';
             }
+            document.getElementById('autoVersion').textContent = 'Versión ' + autoInfo.version;
             const n = autoInfo.quedan_por_subir;
             subir.style.display = (n && autoInfo.acceso_listo) ? '' : 'none';
             subir.textContent = '⬆️ Subir ahora los ' + n + ' ficheros guardados';
@@ -1038,14 +1045,17 @@
             if (!n) { await showAlert('AiKit acepta el usuario y la contraseña. Guardados.', '✅'); return; }
             if (await showConfirm('Acceso a AiKit comprobado y guardado',
                     'Hay ' + n + ' ficheros ya bajados que no se han subido.\n\nSubirlos no pide nada a DEHÚ. ' +
-                    'Puede tardar: deja el programa abierto hasta que termine.',
+                    'Tarda unos 5 minutos por cada 100 ficheros' +
+                    (n >= 200 ? ' (estos, alrededor de ' + (n >= 1100 ? Math.round(n / 1200) + ' h' : Math.round(n / 20) + ' min') + ')' : '') +
+                    '. Se puede dejar el programa abierto y seguir trabajando; si se cierra, «Subir ahora» sigue donde se quedó.',
                     '✅', 'Subir ahora', 'Ahora no')) subirGuardado();
         });
 
         // Al terminar una pasada: si AiKit no ha aceptado el acceso, se dice y se ofrece configurarlo.
         async function alTerminarAuto(r) {
             await cargarAutoEstado();
-            if (r.acceso_no_vale) abrirAcceso('AiKit no ha aceptado el usuario o la contraseña guardados, ' +
+            // Si se eligió bajar sin acceso, el final ya dice qué hacer: no se abre el cuadro.
+            if (r.acceso_no_vale && !r.sin_acceso) abrirAcceso('AiKit no ha aceptado el usuario o la contraseña guardados, ' +
                 'así que no se ha subido nada. Lo bajado sigue guardado en este ordenador. ' +
                 'Escribe aquí el acceso correcto y se podrá subir.');
         }
@@ -1061,17 +1071,58 @@
         }
 
         function subirGuardado() { lanzarAuto('/api/auto/subir'); }
+
+        // Salida de emergencia: un ZIP con lo que espera subida, para enviarlo a mano.
+        document.getElementById('btnPaquete').addEventListener('click', async (e) => {
+            e.preventDefault();
+            const n = autoInfo ? autoInfo.quedan_por_subir : 0;
+            if (!await showConfirm('Preparar un ZIP para enviarlo a mano',
+                    (n ? 'Se copiarán a un ZIP los ' + n + ' ficheros que esperan subida'
+                       : 'Ahora no hay ficheros esperando subida: se preparará solo el ZIP de diagnóstico') +
+                    ', para enviarlo a AiKit por otro camino.\n\nNo se sube nada ni se marca nada como subido: ' +
+                    'los ficheros siguen guardados aquí.', '📦', 'Preparar', 'Cancelar')) return;
+            let data;
+            try {
+                data = await (await fetch('/api/auto/paquete', { method: 'POST' })).json();
+            } catch (err) {
+                data = { exito: false, mensaje: 'El programa no responde.' };
+            }
+            if (!data.exito) { await showAlert(data.mensaje, '⚠️'); return; }
+            const mb = Math.max(1, Math.round(data.bytes / 1048576));
+            await showAlert('Preparado en esta carpeta (se ha abierto en el Explorador):\n' + data.carpeta + '\n\n' +
+                (data.ficheros
+                    ? data.ficheros + ' ficheros en ' + data.partes.length + (data.partes.length > 1 ? ' partes' : ' ZIP') +
+                      ' (' + mb + ' MB en total), más el ZIP de diagnóstico.\n\nEnviad a AiKit todos los ZIP de esa carpeta, por donde os digan.'
+                    : 'Solo el ZIP de diagnóstico. Enviadlo a AiKit por donde os digan.') +
+                '\n\nLos ficheros siguen guardados aquí y se subirán solos cuando la subida funcione.', '📦');
+        });
+
+        // Si se cerró la pestaña con una pasada en marcha, al volver se sigue viendo.
+        (async () => {
+            try {
+                const data = await (await fetch('/api/dehu/estado')).json();
+                if (data.procesando && data.fase) { showProgress(); startPolling(alTerminarAuto); }
+            } catch (e) { /* sin pasada en marcha no hay nada que enseñar */ }
+        })();
         document.getElementById('btnSubir').addEventListener('click', subirGuardado);
 
         document.getElementById('btnAuto').addEventListener('click', async () => {
-            // Sin un acceso que AiKit haya aceptado no se baja nada: primero, configurarlo.
-            if (!autoInfo || !autoInfo.acceso_listo) {
-                abrirAcceso('Antes de bajar nada hay que configurar el acceso a AiKit.');
+            if (!autoInfo) return;
+            // Bajar no depende del acceso a AiKit: sin él se avisa y se deja elegir.
+            const sinAcceso = !autoInfo.acceso_listo;
+            if (sinAcceso && await showConfirm('No se podrá subir a AiKit',
+                    autoInfo.acceso_falta + '\n\nSe puede bajar igualmente: se bajará y se guardará en este ' +
+                    'ordenador, pero no se subirá hasta configurar el acceso.',
+                    '🔑', 'Configurar el acceso ahora', 'Bajar de todas formas')) {
+                abrirAcceso();
                 return;
             }
+            const destino = sinAcceso
+                ? ' y se guardará en este ordenador. No se subirá a AiKit hasta configurar el acceso.'
+                : ' y se subirá a AiKit.';
             const aviso = autoInfo.aceptar_notificaciones_pendientes
-                ? 'Se bajará todo lo de Red.es y se subirá a AiKit.\n\n⚠️ Las notificaciones pendientes de Red.es se ACEPTARÁN (validez jurídica).'
-                : 'Se bajará todo lo de Red.es (comunicaciones y lo ya aceptado) y se subirá a AiKit.\n\nNo se acepta ninguna notificación pendiente.';
+                ? 'Se bajará todo lo de Red.es' + destino + '\n\n⚠️ Las notificaciones pendientes de Red.es se ACEPTARÁN (validez jurídica).'
+                : 'Se bajará todo lo de Red.es (comunicaciones y lo ya aceptado)' + destino + '\n\nNo se acepta ninguna notificación pendiente.';
             if (!await showConfirm('¿Bajar todo lo de Red.es?', aviso, '⬇️')) return;
             lanzarAuto('/api/auto/ejecutar');
         });
@@ -1122,6 +1173,8 @@
                         document.getElementById('progressText').textContent =
                             `Procesando ${data.progreso_actual}/${data.progreso_total} (${pct}%)`;
                     }
+                    // La pasada «todo lo de Red.es» dice ella misma por dónde va.
+                    if (data.fase) document.getElementById('progressText').textContent = data.fase;
 
                     // Done
                     if (!data.procesando && data.resultado) {
@@ -1130,10 +1183,11 @@
                         const r = data.resultado;
                         if (alTerminar) alTerminar(r);
                         document.getElementById('progressBar').style.width = '100%';
-                        document.getElementById('progressText').textContent =
-                            (r.errores ? '⚠️ Terminado con errores: ' : '✅ Completado: ') + `${r.descargados} descargados, ` +
-                            (r.entregados !== undefined ? `${r.entregados} subidos a AiKit, ` : '') +
-                            `${r.errores} errores`;
+                        document.getElementById('progressText').textContent = r.mensaje
+                            ? (r.errores ? '⚠️ Terminado con avisos: ' : '✅ Terminado: ') + r.mensaje
+                            : (r.errores ? '⚠️ Terminado con errores: ' : '✅ Completado: ') + `${r.descargados} descargados, ` +
+                              (r.entregados !== undefined ? `${r.entregados} subidos a AiKit, ` : '') +
+                              `${r.errores} errores`;
 
                         if (data.zip_listo) {
                             document.getElementById('downloadBanner').style.display = 'block';
