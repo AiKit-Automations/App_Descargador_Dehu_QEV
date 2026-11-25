@@ -757,7 +757,13 @@ def ejecutar(client, base_dir, log, avance=None) -> dict:
     with _sin_suspension():
         if avance:
             avance('Bajando de DEHÚ lo que ha enviado Red.es…', 0, 0)
-        bajado = bajar_todo(client, cfg, reg, log)
+        try:
+            bajado = bajar_todo(client, cfg, reg, log)
+        except Exception as e:      # DEHÚ no responde, el certificado no entra…
+            # Lo que ya estaba bajado se entrega igual. Sin listado no hay lista de pendientes que enviar.
+            log(f'[ERROR] No se ha podido bajar de DEHÚ: {e}')
+            resumen.update(error_bajada=str(e)[:300], errores=1)
+            return _entregar_y_cerrar(cfg, reg, log, resumen, None, avance)
         # La lista no se guarda en el resumen de la pasada: va en su propio fichero.
         informe = {'generado_en': _ahora(), 'listado_completo': bajado.pop('pendientes_listado_completo'),
                    'pendientes': bajado.pop('pendientes_lista')}
@@ -816,10 +822,12 @@ def _mensaje_final(resumen: dict) -> str:
     """Lo que la pantalla dice al terminar, en palabras llanas."""
     quedan = resumen['quedan_por_subir']
     partes = [] if resumen.get('solo_entrega') else [f'{resumen.get("bajados", 0)} bajados de DEHÚ']
+    if resumen.get('error_bajada'):
+        partes = [f'No se ha podido bajar de DEHÚ ({resumen["error_bajada"]})']
     if not resumen.get('sin_acceso'):
         partes.append(f'{resumen.get("entregados", 0)} subidos a AiKit')
     texto = ', '.join(partes) + '.'
-    if resumen.get('errores'):
+    if resumen.get('errores') and not resumen.get('error_bajada'):
         texto += f' {resumen["errores"]} envíos de DEHÚ han dado error y se piden otra vez en la próxima pasada.'
     if resumen.get('sin_acceso'):
         texto += (f' No se ha subido nada a AiKit: {resumen["error_entrega"]} '

@@ -966,3 +966,14 @@ def test_la_pantalla_prepara_el_paquete_sin_acceso_y_pide_sesion(entorno, pantal
     finally:
         with aplicacion.dehu_lock:
             aplicacion.dehu_estado['procesando'] = False
+
+
+def test_si_dehu_no_responde_lo_ya_bajado_se_sube_igual(entorno):
+    entorno.guardados(NUEVE)
+
+    def dehu_caido(url, accion, xml):
+        raise ConnectionError('DEHÚ no responde (prueba)')
+    r = entorno.pasada(dehu_caido)
+    assert r['entregados'] == 9 and entorno.por_subir() == [] and r['errores'] == 1
+    assert GestorFalso.pendientes == []             # sin listado no se envía lista de pendientes
+    assert r['mensaje'].startswith('No se ha podido bajar de DEHÚ (') and r['mensaje'].endswith('9 subidos a AiKit.')
