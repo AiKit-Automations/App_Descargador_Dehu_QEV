@@ -992,7 +992,7 @@
             const u = autoInfo.ultima_pasada;
             if (u) partes.push('Última pasada ' + (u.fin || u.inicio).replace('T', ' ') + ': ' +
                 (u.bajados || 0) + ' bajados, ' + (u.entregados || 0) + ' entregados' +
-                (u.error_entrega ? ', entrega fallida' : '') + '.');
+                (u.sin_acceso ? ', sin subir por falta de acceso' : u.error_entrega ? ', con avisos en la subida' : '') + '.');
             el.textContent = partes.join(' ');
         }
         cargarAutoEstado();
