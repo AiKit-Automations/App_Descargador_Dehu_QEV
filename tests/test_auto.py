@@ -541,6 +541,7 @@ def test_un_listado_que_dehu_rechaza_no_pasa_por_bueno(entorno, monkeypatch, cap
     r = entorno.pasada(dehu)
     assert r['listado_incompleto'] is True and r['bajados'] == 0
     assert any(linea.startswith('[ERROR] El listado de realizadas') for linea in entorno.logs)
+    assert 'DEHÚ no ha dado el listado completo' in r['mensaje']      # la pantalla lo dice al terminar
     # La orden de la tarea programada termina con error, no en silencio.
     monkeypatch.setattr(auto, 'cert_context_guardado', lambda base: {})
     cliente = DEHuClient(DEHuConfig(pfx_base64=entorno.pfx_b64, key_password=PFX_PASSWORD,

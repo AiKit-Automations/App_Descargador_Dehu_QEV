@@ -827,6 +827,8 @@ def _mensaje_final(resumen: dict) -> str:
     if not resumen.get('sin_acceso'):
         partes.append(f'{resumen.get("entregados", 0)} subidos a AiKit')
     texto = ', '.join(partes) + '.'
+    if resumen.get('listado_incompleto'):
+        texto += ' DEHÚ no ha dado el listado completo: puede quedar algo por bajar; se pide otra vez en la próxima pasada.'
     if resumen.get('errores') and not resumen.get('error_bajada'):
         texto += f' {resumen["errores"]} envíos de DEHÚ han dado error y se piden otra vez en la próxima pasada.'
     if resumen.get('sin_acceso'):

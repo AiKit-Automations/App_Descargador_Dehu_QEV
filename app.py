@@ -595,7 +595,8 @@ def _correr_auto(trabajo):
             dehu_estado['resultado'] = {
                 'descargados': resumen.get('bajados', 0),
                 'entregados': resumen.get('entregados', 0),
-                'errores': resumen.get('errores', 0) + (1 if resumen.get('error_entrega') else 0),
+                'errores': (resumen.get('errores', 0) + (1 if resumen.get('error_entrega') else 0)
+                            + (1 if resumen.get('listado_incompleto') else 0)),
                 'acceso_no_vale': bool(resumen.get('acceso_no_vale')),
                 'sin_acceso': bool(resumen.get('sin_acceso')),
                 'mensaje': resumen.get('mensaje', ''),
