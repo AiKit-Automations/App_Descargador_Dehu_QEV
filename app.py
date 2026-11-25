@@ -700,13 +700,24 @@ if __name__ == '__main__':
         sys.exit(auto.main(sys.argv[2:], EXECUTABLE_DIR,
                            lambda ctx, log: _crear_dehu_client(cert_context=ctx)))
 
+    # Una sola copia abierta: en Windows dos pueden quedarse con el mismo puerto
+    # y trabajar a la vez sobre los mismos ficheros. La segunda abre la pantalla
+    # de la primera y termina.
+    import socket
+    import webbrowser
+    with socket.socket() as _prueba:
+        _prueba.settimeout(1)
+        if _prueba.connect_ex(('127.0.0.1', 60004)) == 0:
+            print('El programa ya está abierto en este ordenador. Se abre su pantalla en el navegador.')
+            webbrowser.open_new('http://localhost:60004')
+            sys.exit(0)
+
     print("=" * 60)
     print("  DESCARGADOR DEHÚ LITE")
     print("  http://localhost:60004")
     print("=" * 60)
     
     import threading
-    import webbrowser
     def _abrir_navegador():
         time.sleep(1.5)
         webbrowser.open_new('http://localhost:60004')
