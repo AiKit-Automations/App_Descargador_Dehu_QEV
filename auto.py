@@ -577,7 +577,9 @@ def _entregar_lote(sesion: _SesionGestor, rutas: list, max_espera: int) -> dict:
                         json={'carpeta_input': subida['carpeta'], 'origen': 'manual'}), 'procesar')
     fin = _esperar_lote(sesion.s, max_espera)
     if fin.get('error_claude'):
-        raise GestorParado(f'AiKit no puede procesar ahora: {fin["error_claude"]}')
+        # El texto del gestor está escrito para AiKit; a quien usa el programa se le dice de quién es el fallo.
+        raise GestorParado(f'AiKit no puede procesar ficheros ahora mismo. Es un fallo de AiKit, no de este '
+                           f'ordenador: avisad a AiKit. (Detalle: {fin["error_claude"]})')
     # Entregado = el gestor dice que ha pasado por todos los ficheros del lote.
     # Un gestor reiniciado a mitad responde «parado» con todo a cero: no vale.
     total = _entero(fin.get('total'))
@@ -609,7 +611,9 @@ def _esperar_lote(s, max_espera: int) -> dict:
 
 
 def _duracion_llana(segundos: float) -> str:
-    minutos = max(1, round(segundos / 60))
+    minutos = round(segundos / 60)
+    if minutos < 2:
+        return 'menos de 2 min'
     if minutos < 90:
         return f'unos {minutos} min'
     return f'unas {round(minutos / 60)} h'

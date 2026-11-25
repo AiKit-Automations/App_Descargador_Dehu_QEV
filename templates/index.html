@@ -288,6 +288,7 @@
 
         /* ── Acceso a AiKit ── */
         .btn-secundario { background: #e5e7eb; color: #374151; }
+        .btn:disabled { opacity: 0.5; cursor: not-allowed; }
         .acceso-box { text-align: left; }
         .acceso-box label { display: block; font-size: 13px; font-weight: 600; color: #374151; margin: 12px 0 4px; }
         .acceso-box input {
@@ -1132,6 +1133,12 @@
         // ══════════════════════════════════════════════════════
         let pollInterval = null;
         let lastLogIdx = 0;
+        let ultimoAvance = -1;
+
+        function botonesAuto(activos) {
+            for (const id of ['btnAuto', 'btnAcceso', 'btnSubir']) document.getElementById(id).disabled = !activos;
+            document.getElementById('btnPaquete').style.visibility = activos ? '' : 'hidden';
+        }
 
         function showProgress() {
             document.getElementById('progressPanel').style.display = 'block';
@@ -1173,8 +1180,16 @@
                         document.getElementById('progressText').textContent =
                             `Procesando ${data.progreso_actual}/${data.progreso_total} (${pct}%)`;
                     }
-                    // La pasada «todo lo de Red.es» dice ella misma por dónde va.
-                    if (data.fase) document.getElementById('progressText').textContent = data.fase;
+                    // La pasada «todo lo de Red.es» dice ella misma por dónde va. Mientras dura,
+                    // sus botones no se pueden pulsar y la línea de estado se pone al día.
+                    if (data.fase) {
+                        document.getElementById('progressText').textContent = data.fase;
+                        if (data.progreso_actual !== ultimoAvance) {
+                            ultimoAvance = data.progreso_actual;
+                            cargarAutoEstado();
+                        }
+                    }
+                    botonesAuto(!data.procesando);
 
                     // Done
                     if (!data.procesando && data.resultado) {
