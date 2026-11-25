@@ -285,6 +285,17 @@
         .modal-btn-primary:hover { box-shadow: 0 3px 10px rgba(37,99,235,0.4); }
         .modal-btn-cancel { background: #e5e7eb; color: #374151; }
         .modal-btn-cancel:hover { background: #d1d5db; }
+
+        /* ── Acceso a AiKit ── */
+        .btn-secundario { background: #e5e7eb; color: #374151; }
+        .acceso-box { text-align: left; }
+        .acceso-box label { display: block; font-size: 13px; font-weight: 600; color: #374151; margin: 12px 0 4px; }
+        .acceso-box input {
+            width: 100%; padding: 9px 12px; border: 1.5px solid #d1d5db; border-radius: 8px;
+            font-size: 14px; font-family: inherit;
+        }
+        .acceso-fila { display: flex; gap: 8px; }
+        .acceso-aviso { font-size: 13px; line-height: 1.5; margin-top: 12px; min-height: 20px; color: #b91c1c; }
     </style>
 </head>
 <body>
@@ -301,6 +312,28 @@
             <div class="modal-title" id="modalTitle"></div>
             <div class="modal-msg" id="modalMsg"></div>
             <div class="modal-btns" id="modalBtns"></div>
+        </div>
+    </div>
+
+    <!-- Acceso a AiKit: usuario y contraseña del gestor, comprobados antes de guardarlos -->
+    <div class="modal-backdrop" id="accesoBackdrop">
+        <div class="modal-box acceso-box">
+            <div class="modal-title">Acceso a AiKit</div>
+            <div class="modal-msg" style="margin-bottom:4px;">Son el mismo usuario y la misma contraseña con los que entráis en la web de AiKit donde subíais los ZIP:
+<span id="accesoDestino" style="word-break:break-all;"></span></div>
+            <label for="accesoUsuario">Usuario</label>
+            <input type="text" id="accesoUsuario" autocomplete="off" spellcheck="false"
+                   placeholder="El CIF con el que entráis en la web de AiKit">
+            <label for="accesoPassword">Contraseña</label>
+            <div class="acceso-fila">
+                <input type="password" id="accesoPassword" autocomplete="off" spellcheck="false">
+                <button type="button" class="modal-btn modal-btn-cancel" id="accesoVer">Ver</button>
+            </div>
+            <div class="acceso-aviso" id="accesoAviso"></div>
+            <div class="modal-btns" style="justify-content:flex-end; margin-top:14px;">
+                <button type="button" class="modal-btn modal-btn-cancel" id="accesoCancelar">Cancelar</button>
+                <button type="button" class="modal-btn modal-btn-primary" id="accesoGuardar">Comprobar y guardar</button>
+            </div>
         </div>
     </div>
 
@@ -322,7 +355,10 @@
         <!-- Todo lo de Red.es: un botón, sin elegir (auto.py) -->
         <div class="seccion" id="autoBox" style="margin-bottom:14px;">
             <button class="btn btn-primary" id="btnAuto">⬇️ Bajar todo lo de Red.es y subirlo a AiKit</button>
-            <div id="autoEstado" style="margin-top:8px; font-size:13px; color:#555;"></div>
+            <button class="btn btn-secundario" id="btnAcceso">🔑 Configurar acceso a AiKit</button>
+            <button class="btn btn-green" id="btnSubir" style="display:none;"></button>
+            <div id="autoAcceso" style="margin-top:10px; font-size:13px; font-weight:600;"></div>
+            <div id="autoEstado" style="margin-top:4px; font-size:13px; color:#555;"></div>
         </div>
 
         <!-- Tabs -->
@@ -479,15 +515,17 @@
             });
         }
 
-        function showConfirm(title, msg, icon) {
+        function showConfirm(title, msg, icon, textoSi, textoNo) {
             return new Promise(resolve => {
                 const backdrop = document.getElementById('modalBackdrop');
                 document.getElementById('modalIcon').textContent = icon || '⚠️';
                 document.getElementById('modalTitle').textContent = title;
                 document.getElementById('modalMsg').textContent = msg;
                 document.getElementById('modalBtns').innerHTML =
-                    '<button class="modal-btn modal-btn-cancel" id="modalCancel">Cancelar</button>' +
-                    '<button class="modal-btn modal-btn-primary" id="modalConfirm">Confirmar</button>';
+                    '<button class="modal-btn modal-btn-cancel" id="modalCancel"></button>' +
+                    '<button class="modal-btn modal-btn-primary" id="modalConfirm"></button>';
+                document.getElementById('modalCancel').textContent = textoNo || 'Cancelar';
+                document.getElementById('modalConfirm').textContent = textoSi || 'Confirmar';
                 backdrop.classList.add('active');
                 document.getElementById('modalCancel').onclick = () => {
                     backdrop.classList.remove('active');
@@ -908,18 +946,41 @@
         // ══════════════════════════════════════════════════════
         let autoInfo = null;
 
+        function fechaLlana(iso) {
+            const [f, h] = iso.split('T');
+            return f.split('-').reverse().join('/') + ' a las ' + h.slice(0, 5);
+        }
+
         async function cargarAutoEstado() {
             const el = document.getElementById('autoEstado');
+            const acceso = document.getElementById('autoAcceso');
+            const subir = document.getElementById('btnSubir');
             try {
                 autoInfo = await (await fetch('/api/auto/estado')).json();
             } catch (e) { el.textContent = ''; return; }
+
+            if (autoInfo.acceso_listo) {
+                acceso.style.color = '#047857';
+                acceso.textContent = '✅ Acceso a AiKit comprobado el ' + fechaLlana(autoInfo.acceso_comprobado_en) +
+                    ' (usuario ' + autoInfo.gestor_usuario + ').';
+            } else {
+                acceso.style.color = '#b91c1c';
+                acceso.textContent = autoInfo.acceso_no_vale
+                    ? '⚠️ AiKit no ha aceptado el usuario o la contraseña guardados. Pulsa «Configurar acceso a AiKit».'
+                    : autoInfo.gestor_configurado
+                        ? '⚠️ El acceso a AiKit está guardado pero sin comprobar. Pulsa «Configurar acceso a AiKit».'
+                        : '⚠️ Falta configurar el acceso a AiKit: sin él no se puede subir nada.';
+            }
+            const n = autoInfo.quedan_por_subir;
+            subir.style.display = (n && autoInfo.acceso_listo) ? '' : 'none';
+            subir.textContent = '⬆️ Subir ahora los ' + n + ' ficheros guardados';
+
             const partes = [];
             partes.push('Solo Red.es. Se sube a ' + autoInfo.destino + '.');
             partes.push(autoInfo.aceptar_notificaciones_pendientes
                 ? '⚠️ Las notificaciones pendientes SE ACEPTAN solas (comparecencia).'
                 : 'Las notificaciones pendientes no se aceptan: solo comunicaciones y lo ya aceptado.');
-            if (!autoInfo.gestor_configurado) partes.push('Falta configurar el usuario del gestor: se baja, pero no se sube.');
-            if (autoInfo.quedan_por_subir) partes.push(autoInfo.quedan_por_subir + ' ficheros esperan subida.');
+            if (n) partes.push(n + ' ficheros ya bajados esperan subida.');
             const u = autoInfo.ultima_pasada;
             if (u) partes.push('Última pasada ' + (u.fin || u.inicio).replace('T', ' ') + ': ' +
                 (u.bajados || 0) + ' bajados, ' + (u.entregados || 0) + ' entregados' +
@@ -928,17 +989,91 @@
         }
         cargarAutoEstado();
 
+        // ── Acceso a AiKit: se comprueba antes de guardarlo ──
+        function abrirAcceso(aviso) {
+            document.getElementById('accesoDestino').textContent = autoInfo ? autoInfo.destino : '';
+            document.getElementById('accesoUsuario').value = autoInfo ? autoInfo.gestor_usuario : '';
+            const pw = document.getElementById('accesoPassword');
+            pw.value = ''; pw.type = 'password';
+            document.getElementById('accesoVer').textContent = 'Ver';
+            document.getElementById('accesoAviso').textContent = aviso || '';
+            document.getElementById('accesoBackdrop').classList.add('active');
+            (document.getElementById('accesoUsuario').value ? pw : document.getElementById('accesoUsuario')).focus();
+        }
+        function cerrarAcceso() {
+            document.getElementById('accesoPassword').value = '';
+            document.getElementById('accesoBackdrop').classList.remove('active');
+        }
+        document.getElementById('btnAcceso').addEventListener('click', () => abrirAcceso());
+        document.getElementById('accesoCancelar').addEventListener('click', cerrarAcceso);
+        document.getElementById('accesoVer').addEventListener('click', () => {
+            const pw = document.getElementById('accesoPassword');
+            pw.type = pw.type === 'password' ? 'text' : 'password';
+            document.getElementById('accesoVer').textContent = pw.type === 'password' ? 'Ver' : 'Ocultar';
+        });
+        document.getElementById('accesoPassword').addEventListener('keydown', e => {
+            if (e.key === 'Enter') document.getElementById('accesoGuardar').click();
+        });
+        document.getElementById('accesoGuardar').addEventListener('click', async () => {
+            const boton = document.getElementById('accesoGuardar');
+            const aviso = document.getElementById('accesoAviso');
+            boton.disabled = true; boton.textContent = 'Comprobando…'; aviso.textContent = '';
+            let data;
+            try {
+                data = await (await fetch('/api/auto/acceso', {
+                    method: 'POST', headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        usuario: document.getElementById('accesoUsuario').value,
+                        password: document.getElementById('accesoPassword').value,
+                    }),
+                })).json();
+            } catch (e) {
+                data = { exito: false, mensaje: 'El programa no responde. No se ha guardado nada.' };
+            }
+            boton.disabled = false; boton.textContent = 'Comprobar y guardar';
+            if (!data.exito) { aviso.textContent = data.mensaje; return; }
+            cerrarAcceso();
+            await cargarAutoEstado();
+            const n = autoInfo.quedan_por_subir;
+            if (!n) { await showAlert('AiKit acepta el usuario y la contraseña. Guardados.', '✅'); return; }
+            if (await showConfirm('Acceso a AiKit comprobado y guardado',
+                    'Hay ' + n + ' ficheros ya bajados que no se han subido.\n\nSubirlos no pide nada a DEHÚ. ' +
+                    'Puede tardar: deja el programa abierto hasta que termine.',
+                    '✅', 'Subir ahora', 'Ahora no')) subirGuardado();
+        });
+
+        // Al terminar una pasada: si AiKit no ha aceptado el acceso, se dice y se ofrece configurarlo.
+        async function alTerminarAuto(r) {
+            await cargarAutoEstado();
+            if (r.acceso_no_vale) abrirAcceso('AiKit no ha aceptado el usuario o la contraseña guardados, ' +
+                'así que no se ha subido nada. Lo bajado sigue guardado en este ordenador. ' +
+                'Escribe aquí el acceso correcto y se podrá subir.');
+        }
+
+        async function lanzarAuto(ruta) {
+            showProgress();
+            try {
+                const data = await (await fetch(ruta, { method: 'POST' })).json();
+                if (data.falta_acceso) { abrirAcceso(data.mensaje); return; }
+                if (!data.exito) { addLog(`[ERROR] ${data.mensaje}`); return; }
+                startPolling(alTerminarAuto);
+            } catch (e) { addLog(`[ERROR] ${e.message}`); }
+        }
+
+        function subirGuardado() { lanzarAuto('/api/auto/subir'); }
+        document.getElementById('btnSubir').addEventListener('click', subirGuardado);
+
         document.getElementById('btnAuto').addEventListener('click', async () => {
-            const aviso = autoInfo && autoInfo.aceptar_notificaciones_pendientes
+            // Sin un acceso que AiKit haya aceptado no se baja nada: primero, configurarlo.
+            if (!autoInfo || !autoInfo.acceso_listo) {
+                abrirAcceso('Antes de bajar nada hay que configurar el acceso a AiKit.');
+                return;
+            }
+            const aviso = autoInfo.aceptar_notificaciones_pendientes
                 ? 'Se bajará todo lo de Red.es y se subirá a AiKit.\n\n⚠️ Las notificaciones pendientes de Red.es se ACEPTARÁN (validez jurídica).'
                 : 'Se bajará todo lo de Red.es (comunicaciones y lo ya aceptado) y se subirá a AiKit.\n\nNo se acepta ninguna notificación pendiente.';
             if (!await showConfirm('¿Bajar todo lo de Red.es?', aviso, '⬇️')) return;
-            showProgress();
-            try {
-                const data = await (await fetch('/api/auto/ejecutar', { method: 'POST' })).json();
-                if (!data.exito) { addLog(`[ERROR] ${data.mensaje}`); return; }
-                startPolling(cargarAutoEstado);
-            } catch (e) { addLog(`[ERROR] ${e.message}`); }
+            lanzarAuto('/api/auto/ejecutar');
         });
 
         // ══════════════════════════════════════════════════════
@@ -993,10 +1128,12 @@
                         clearInterval(pollInterval);
                         pollInterval = null;
                         const r = data.resultado;
-                        if (alTerminar) alTerminar();
+                        if (alTerminar) alTerminar(r);
                         document.getElementById('progressBar').style.width = '100%';
                         document.getElementById('progressText').textContent =
-                            `✅ Completado: ${r.descargados} descargados, ${r.errores} errores`;
+                            (r.errores ? '⚠️ Terminado con errores: ' : '✅ Completado: ') + `${r.descargados} descargados, ` +
+                            (r.entregados !== undefined ? `${r.entregados} subidos a AiKit, ` : '') +
+                            `${r.errores} errores`;
 
                         if (data.zip_listo) {
                             document.getElementById('downloadBanner').style.display = 'block';

@@ -569,18 +569,20 @@ def dehu_descargar_zip():
 # TODO LO DE RED.ES (auto.py): un botón, sin elegir
 # ══════════════════════════════════════════════════════════════════
 
-def ejecutar_todo_redes(cert_context):
-    """Thread: baja todo lo de Red.es y lo entrega al gestor de AiKit."""
+def _correr_auto(trabajo):
+    """Thread: ejecuta `trabajo()` (una pasada de auto.py, que devuelve su
+    resumen) y deja el resultado para la pantalla."""
     try:
         with dehu_lock:
             dehu_estado.update(procesando=True, logs=[], progreso_actual=0,
                                progreso_total=0, resultado=None, zip_path='')
-        client = _crear_dehu_client(cert_context=cert_context)
-        resumen = auto.ejecutar(client, EXECUTABLE_DIR, _dehu_log)
+        resumen = trabajo()
         with dehu_lock:
             dehu_estado['resultado'] = {
                 'descargados': resumen.get('bajados', 0),
+                'entregados': resumen.get('entregados', 0),
                 'errores': resumen.get('errores', 0) + (1 if resumen.get('error_entrega') else 0),
+                'acceso_no_vale': bool(resumen.get('acceso_no_vale')),
             }
     except Exception as e:
         _dehu_log(f'[ERROR] Error crítico: {str(e)}')
@@ -591,6 +593,34 @@ def ejecutar_todo_redes(cert_context):
             dehu_estado['procesando'] = False
 
 
+def ejecutar_todo_redes(cert_context):
+    """Thread: baja todo lo de Red.es y lo entrega al gestor de AiKit."""
+    _correr_auto(lambda: auto.ejecutar(_crear_dehu_client(cert_context=cert_context),
+                                       EXECUTABLE_DIR, _dehu_log))
+
+
+def ejecutar_subida_guardada():
+    """Thread: entrega al gestor lo que ya está bajado. No pide nada a DEHÚ."""
+    _correr_auto(lambda: auto.subir_guardado(EXECUTABLE_DIR, _dehu_log))
+
+
+def _arrancar_auto(objetivo, *args):
+    """Arranca una pasada si la sesión, el acceso a AiKit y el estado lo permiten."""
+    if 'nif' not in session:
+        return jsonify({'exito': False, 'mensaje': 'Sesión no iniciada'}), 401
+    # Sin un acceso que AiKit haya aceptado no se arranca: nada de bajar sin poder subir.
+    if not auto.estado(EXECUTABLE_DIR)['acceso_listo']:
+        return jsonify({'exito': False, 'falta_acceso': True,
+                        'mensaje': 'Antes hay que configurar el acceso a AiKit.'}), 400
+    with dehu_lock:
+        if dehu_estado['procesando']:
+            return jsonify({'exito': False, 'mensaje': 'Ya hay un proceso en ejecución'}), 400
+    thread = threading.Thread(target=objetivo, args=args)
+    thread.daemon = True
+    thread.start()
+    return jsonify({'exito': True, 'mensaje': 'Proceso iniciado'})
+
+
 @app.route('/api/auto/estado', methods=['GET'])
 def auto_estado():
     if 'nif' not in session:
@@ -598,17 +628,27 @@ def auto_estado():
     return jsonify({'exito': True, **auto.estado(EXECUTABLE_DIR)})
 
 
-@app.route('/api/auto/ejecutar', methods=['POST'])
-def auto_ejecutar():
+@app.route('/api/auto/acceso', methods=['POST'])
+def auto_acceso():
+    """Comprueba con AiKit el usuario y la contraseña del gestor y, solo si
+    los acepta, los guarda. La contraseña no se devuelve ni se anota."""
     if 'nif' not in session:
         return jsonify({'exito': False, 'mensaje': 'Sesión no iniciada'}), 401
-    with dehu_lock:
-        if dehu_estado['procesando']:
-            return jsonify({'exito': False, 'mensaje': 'Ya hay un proceso en ejecución'}), 400
-    thread = threading.Thread(target=ejecutar_todo_redes, args=(_cert_de_sesion(),))
-    thread.daemon = True
-    thread.start()
-    return jsonify({'exito': True, 'mensaje': 'Proceso iniciado'})
+    data = request.get_json(silent=True)
+    if not isinstance(data, dict):
+        data = {}
+    r = auto.comprobar_y_guardar_acceso(EXECUTABLE_DIR, data.get('usuario'), data.get('password'))
+    return jsonify({**auto.estado(EXECUTABLE_DIR), **r}), (200 if r['exito'] else 400)
+
+
+@app.route('/api/auto/ejecutar', methods=['POST'])
+def auto_ejecutar():
+    return _arrancar_auto(ejecutar_todo_redes, _cert_de_sesion())
+
+
+@app.route('/api/auto/subir', methods=['POST'])
+def auto_subir():
+    return _arrancar_auto(ejecutar_subida_guardada)
 
 
 # ══════════════════════════════════════════════════════════════════

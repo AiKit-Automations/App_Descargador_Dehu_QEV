@@ -1,15 +1,17 @@
 # Descargador DEHÚ: pasada «todo lo de Red.es». Documento para revisión de IT
 
-Rama `auto/todo-redes-a-diario`. Este documento explica qué cambia respecto a la versión que ya tenéis, qué sale del ordenador, qué se guarda en él y cómo se apaga. Todo lo que se afirma aquí se puede comprobar en el código; se indica el fichero en cada punto.
+Rama `auto/acceso-aikit-en-pantalla` (sobre `auto/todo-redes-a-diario`). Este documento explica qué cambia respecto a la versión que ya tenéis, qué sale del ordenador, qué se guarda en él y cómo se apaga. Todo lo que se afirma aquí se puede comprobar en el código; se indica el fichero en cada punto.
 
 ## Qué cambia
 
 1. **Un botón nuevo en la pantalla**: «Bajar todo lo de Red.es y subirlo a AiKit». Baja de DEHÚ todo lo que Red.es ha enviado al titular del certificado y lo sube al gestor de AiKit, sin marcar nada a mano y sin el paso de subir el ZIP a la web.
 2. **Una pasada diaria opcional, sin nadie delante** (tarea programada de Windows). No se instala sola: hay que crearla expresamente.
-3. **La pantalla manual sigue igual**: listar, marcar, descargar y bajar el ZIP funcionan como antes.
-4. **La pantalla ya solo se abre en este ordenador** (`127.0.0.1`). Antes escuchaba en toda la red local y con el modo de depuración de Flask activo (`app.py`, última línea).
+3. **El acceso a AiKit se configura en la pantalla**: el botón «Configurar acceso a AiKit» pide el usuario y la contraseña de la web de AiKit, los comprueba entrando y saliendo de esa web, y solo los guarda si AiKit los acepta. No hace falta ninguna ventana de órdenes (apartado «El acceso a AiKit»).
+4. **Un botón para subir lo ya bajado**: «Subir ahora los N ficheros guardados» entrega lo que haya quedado sin subir, sin pedir nada a DEHÚ.
+5. **La pantalla manual sigue igual**: listar, marcar, descargar y bajar el ZIP funcionan como antes.
+6. **La pantalla ya solo se abre en este ordenador** (`127.0.0.1`). Antes escuchaba en toda la red local y con el modo de depuración de Flask activo (`app.py`, última línea).
 
-Ficheros: `auto.py` (nuevo, la pasada), `descarga.py` (nuevo: código que ya existía en `app.py`, movido sin cambiar lo que hace para que lo usen la pantalla y la pasada), `app.py` (dos rutas nuevas y el arranque), `templates/index.html` (el botón), `tests/` (pruebas). `dehu_client.py` y `auth.py` no cambian. No hay dependencias nuevas (`requirements.txt` no cambia).
+Ficheros: `auto.py` (nuevo, la pasada y el acceso a AiKit), `descarga.py` (nuevo: código que ya existía en `app.py`, movido sin cambiar lo que hace para que lo usen la pantalla y la pasada), `app.py` (cuatro rutas nuevas, `/api/auto/…`, y el arranque), `templates/index.html` (los botones y el cuadro del acceso), `tests/` (pruebas). `dehu_client.py` y `auth.py` no cambian. No hay dependencias nuevas (`requirements.txt` no cambia).
 
 ## Qué baja la pasada
 
@@ -25,6 +27,17 @@ La primera pasada abre todas las comunicaciones de Red.es que estén pendientes,
 Aceptar una notificación pendiente es comparecer: tiene efecto legal y abre su plazo. La pasada solo lo hace si en `auto_config.json` figura `"aceptar_notificaciones_pendientes": true`, y eso solo se escribe ejecutando `auto configurar` y tecleando la palabra `ACEPTO`. Con cualquier otro valor está apagado (`auto.py`, `leer_config` y `bajar_todo`).
 
 Con el permiso apagado, una notificación pendiente entra en AiKit cuando alguien la acepta (en la pantalla manual o en la web de DEHÚ): a partir de entonces aparece como realizada y la pasada la recoge.
+
+## El acceso a AiKit
+
+Para subir, el programa entra en la web de AiKit con el mismo usuario y la misma contraseña que usáis en ella. Se configuran en la pantalla, con «Configurar acceso a AiKit» (`templates/index.html`; `app.py`, `auto_acceso`; `auto.py`, `comprobar_y_guardar_acceso`):
+
+- **Se comprueban antes de guardarlos.** El programa entra en la web de AiKit con lo escrito (`POST /login-password`) y sale (`GET /logout`). Si AiKit los acepta, los guarda; si no, dice por qué (usuario o contraseña que AiKit no reconoce, o no se ha podido llegar a AiKit) y **no guarda nada**: lo que hubiera guardado antes queda como estaba.
+- **Lo que se escribe se limpia poco y a la vista**: se quitan los espacios y saltos de línea de los extremos (restos de copiar y pegar) y se rechaza, sin llamar a AiKit, un usuario o una contraseña con caracteres que no se ven (un salto de línea en medio, el carácter que deja Ctrl+V en algunas ventanas).
+- **La contraseña no se devuelve a la pantalla, no se escribe en ningún registro y no aparece en los mensajes**: solo queda cifrada en `auto_config.json` (apartado «Qué se guarda en el ordenador»). Hay una prueba que lo comprueba (`tests/test_auto.py`, `test_la_contrasena_del_gestor_no_se_devuelve_ni_se_anota`).
+- **Sin un acceso comprobado, el botón no baja nada**: abre el cuadro del acceso. Así no se repite una pasada que baja y no puede subir (`app.py`, `_arrancar_auto`).
+- **Si AiKit deja de aceptar lo guardado** (un 401 al entregar) o la contraseña guardada no se puede leer (otra cuenta de Windows, otro ordenador), la pantalla lo dice y ofrece el cuadro. Lo bajado sigue en `outputs/auto/por_subir`.
+- **«Subir ahora los N ficheros guardados»** entrega lo que hay en `por_subir` por los mismos tres pasos de siempre. No llama a DEHÚ y no envía lista de pendientes (`auto.py`, `subir_guardado`).
 
 ## La lista de notificaciones pendientes
 
@@ -44,7 +57,7 @@ Solo hay dos destinos:
 | Destino | Qué se envía | Dónde está en el código |
 |---|---|---|
 | DEHÚ (`gd-dehuws.redsara.es`) | Las mismas llamadas que hace hoy la pantalla manual, firmadas con el certificado | `dehu_client.py` (sin cambios) |
-| Gestor de AiKit: `https://clasificador-dehu-v2-production.up.railway.app` | El usuario y la contraseña del gestor (los que ya usáis en esa web); los ZIP de Red.es tal como los devuelve DEHÚ, con un `meta.json` dentro (identificador, concepto, fecha de puesta a disposición, tipo y emisor); y la lista de notificaciones de Red.es pendientes (apartado anterior) | `auto.py`, `entregar_todo` e `informar_pendientes` |
+| Gestor de AiKit: `https://clasificador-dehu-v2-production.up.railway.app` | El usuario y la contraseña del gestor (los que ya usáis en esa web), al entregar y al comprobarlos en «Configurar acceso a AiKit»; los ZIP de Red.es tal como los devuelve DEHÚ, con un `meta.json` dentro (identificador, concepto, fecha de puesta a disposición, tipo y emisor); y la lista de notificaciones de Red.es pendientes (apartado anterior) | `auto.py`, `_entrar`, `entregar_todo` e `informar_pendientes` |
 
 - La dirección del gestor es una constante del código (`GESTOR_URL`). No se puede cambiar desde la configuración, y las peticiones no siguen redirecciones.
 - Es la misma web y son los mismos tres pasos que hacéis hoy a mano: entrar, subir los ZIP y pulsar procesar. Lo único nuevo que sale es la lista de pendientes.
@@ -64,11 +77,11 @@ Todo queda en la carpeta del programa:
 | Registro de lo enviado | `outputs/auto/enviado.log` | Una línea por fichero: fecha, destino, nombre, tamaño y sha256 |
 | Última lista de pendientes enviada | `outputs/auto/pendientes_informadas.json` | Texto, tal como salió |
 | Mensajes de cada pasada programada | `outputs/auto/pasadas.log` | Texto |
-| Configuración | `auto_config.json` | Texto. Las contraseñas van cifradas (abajo) |
+| Configuración | `auto_config.json` | Texto: el usuario de AiKit, cuándo se comprobó por última vez y las contraseñas, cifradas (abajo) |
 
 ### El punto sensible: la pasada sin nadie delante
 
-Con el **botón**, el certificado se carga en la pantalla como hasta ahora: vive en memoria mientras el programa está abierto y no se guarda en disco. Lo único que se guarda es la contraseña del gestor de AiKit.
+Con el **botón**, el certificado se carga en la pantalla como hasta ahora: vive en memoria mientras el programa está abierto y no se guarda en disco. Lo único que se guarda es el acceso a AiKit: el usuario y, cifrada, la contraseña.
 
 La **tarea programada** necesita el certificado sin que nadie lo cargue. Para eso `auto_config.json` guarda:
 
@@ -82,13 +95,15 @@ La contraseña del gestor de AiKit se guarda del mismo modo.
 ## Cómo se usa
 
 ```
-iniciar.bat                          abre la pantalla (como siempre); ahí está el botón
-python app.py auto configurar        usuario y contraseña del gestor; opcional: certificado y permiso de aceptar
+iniciar.bat                          abre la pantalla (como siempre); ahí están los botones
+python app.py auto configurar        certificado y permiso de aceptar; también el acceso a AiKit, comprobado igual que en la pantalla
 python app.py auto ejecutar          hace una pasada ahora, sin pantalla
 python app.py auto programar 08:00   crea la tarea diaria de Windows (schtasks) a esa hora
 python app.py auto desprogramar      borra la tarea
 python app.py auto estado            enseña la configuración y la última pasada
 ```
+
+Para el uso con el botón no hace falta ninguna de estas órdenes: el acceso a AiKit se configura en la pantalla. Las órdenes `auto …` son para la pasada diaria sin nadie delante y para el permiso de aceptar.
 
 La tarea se llama `DescargadorDehuQEV-TodoRedes` y se ejecuta con la cuenta que la crea, solo con la sesión de esa cuenta iniciada (modo «Interactive only» del Programador de tareas): con el ordenador encendido pero sin sesión, no arranca. Si un día no se ejecuta, la siguiente pasada recoge lo que faltó, siempre que no pasen más de 29 días. La orden termina con código 1 si algo falla (un listado incompleto, un envío que no baja, la entrega), y el Programador de tareas lo muestra como último resultado.
 
@@ -96,11 +111,16 @@ La tarea se llama `DescargadorDehuQEV-TodoRedes` y se ejecuta con la cuenta que 
 
 - **La pasada diaria**: `python app.py auto desprogramar` (o borrar la tarea en el Programador de tareas).
 - **Aceptar notificaciones**: `python app.py auto configurar` y responder `NO`, o poner `false` en `auto_config.json`.
-- **Todo lo nuevo**: borrar `auto_config.json`. Sin él no hay contraseñas guardadas, la pasada baja pero no sube nada y la tarea programada no puede arrancar. La pantalla manual sigue funcionando.
+- **Todo lo nuevo**: borrar `auto_config.json`. Sin él no hay contraseñas guardadas, el botón no arranca (pide el acceso a AiKit) y la tarea programada no puede arrancar. La pantalla manual sigue funcionando.
+
+## Cambiar de versión
+
+`outputs/auto/` y `auto_config.json` están en la carpeta del programa, junto al `.exe`. Al sustituir el `.exe` por uno nuevo **en la misma carpeta** se conserva todo: lo bajado sin subir, el registro de lo ya entregado y la configuración. Un `auto_config.json` de la versión anterior se lee igual; como su acceso a AiKit no está comprobado, el botón abre el cuadro del acceso y lo que se guarde ahí sustituye a lo anterior. En una carpeta distinta, el programa empieza de cero y lo bajado sin subir se queda en la carpeta antigua.
 
 ## Comportamiento ante fallos
 
-- Si la subida falla, lo bajado se queda en `por_subir` y se reintenta en la siguiente pasada, sin volver a pedirlo a DEHÚ.
+- Si la subida falla, lo bajado se queda en `por_subir` y se reintenta en la siguiente pasada, o con «Subir ahora los N ficheros guardados», sin volver a pedirlo a DEHÚ.
+- Si falla porque AiKit no acepta el usuario o la contraseña guardados, la pantalla lo dice con esas palabras y abre el cuadro del acceso.
 - Un envío ya bajado o ya subido no se vuelve a pedir ni a subir.
 - Si DEHÚ contesta tres veces que no tiene el documento de un envío, se deja de pedir. Un corte de red no cuenta.
 - DEHÚ admite un número limitado de consultas por envío (error 4225). Ese envío cuenta un «no» y la pasada sigue con los demás; con 5 seguidos la pasada se para hasta el día siguiente. La orden termina con código 1 para que se vea.
@@ -111,7 +131,7 @@ La tarea se llama `DescargadorDehuQEV-TodoRedes` y se ejecuta con la cuenta que 
 
 ## Pruebas
 
-`python -m pytest tests -q` (26 pruebas, sin red: DEHÚ y el gestor se sustituyen por respuestas de mentira y el certificado es uno autofirmado creado en la prueba). Cubren: solo Red.es; notificaciones pendientes sin aceptar por defecto; el permiso solo con `true`; la lista de pendientes (qué lleva, que no abre nada, lista vacía, gestor que no la admite); el rango de fechas que DEHÚ admite; un listado rechazado termina en error; los topes de DEHÚ (4225 por envío y 4305 por día); no repetir; reintento de la subida; registro de lo enviado; que el certificado y su contraseña no salen; y que la pantalla manual sigue funcionando.
+`python -m pytest tests -q` (37 pruebas, sin red: DEHÚ y el gestor se sustituyen por respuestas de mentira y el certificado es uno autofirmado creado en la prueba). Cubren: solo Red.es; notificaciones pendientes sin aceptar por defecto; el permiso solo con `true`; la lista de pendientes (qué lleva, que no abre nada, lista vacía, gestor que no la admite); el rango de fechas que DEHÚ admite; un listado rechazado termina en error; los topes de DEHÚ (4225 por envío y 4305 por día); no repetir; reintento de la subida; registro de lo enviado; que el certificado y su contraseña no salen; el acceso a AiKit (se guarda solo si AiKit lo acepta, lo anterior queda intacto si no, un carácter que no se ve se rechaza sin llamar, la contraseña no se devuelve ni se anota, el botón no arranca sin acceso comprobado, subir lo guardado no llama a DEHÚ); y que la pantalla manual sigue funcionando.
 
 ## Probado con el DEHÚ real (18-11-2026)
 

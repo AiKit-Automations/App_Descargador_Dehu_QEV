@@ -167,6 +167,7 @@ class GestorFalso:
     error_claude = None
     pendientes = []          # cada lista de pendientes recibida
     estado_pendientes = 200  # 404 = gestor que aún no tiene la ruta
+    sin_red = False          # la entrada al gestor falla por la red
 
     def __init__(self):
         self._sondeos = 0
@@ -176,12 +177,15 @@ class GestorFalso:
         cls.peticiones, cls.recibidos, cls.cuerpos = [], {}, []
         cls.login_ok, cls.error_claude = True, None
         cls.pendientes, cls.estado_pendientes = [], 200
+        cls.sin_red = False
 
     def post(self, url, json=None, files=None, timeout=None, allow_redirects=True):
         assert url.startswith(auto.GESTOR_URL + '/'), url
         assert allow_redirects is False
         type(self).peticiones.append(('POST', url))
         if url.endswith('/login-password'):
+            if self.sin_red:
+                raise auto.requests.RequestException('corte de red de prueba')
             type(self).cuerpos.append(repr(json).encode())
             ok = self.login_ok and json['password'] == GESTOR_PASSWORD
             return RespuestaGestor({'exito': ok, 'mensaje': 'Credenciales incorrectas'}, 200 if ok else 401)
@@ -537,8 +541,147 @@ def test_la_pantalla_manual_sigue_bajando_lo_marcado(tmp_path, monkeypatch, pfx_
         assert json.loads(zipfile.ZipFile(io.BytesIO(zf.read('P2.zip'))).read('meta.json'))['identificador'] == 'P2'
 
 
-def test_rutas_del_boton_piden_sesion():
+def test_rutas_del_boton_piden_sesion(entorno):
     import app as aplicacion
     cliente = aplicacion.app.test_client()
     assert cliente.get('/api/auto/estado').status_code == 401
     assert cliente.post('/api/auto/ejecutar').status_code == 401
+    assert cliente.post('/api/auto/subir').status_code == 401
+    assert cliente.post('/api/auto/acceso', json={'usuario': 'B00000000', 'password': 'x'}).status_code == 401
+    assert GestorFalso.peticiones == []
+
+
+# ── Acceso a AiKit: se comprueba antes de guardarlo ──
+
+def _config_en_disco(base):
+    with open(os.path.join(base, 'auto_config.json'), encoding='utf-8') as f:
+        return f.read()
+
+
+def _todo_el_disco(base):
+    """Todo lo que el programa ha escrito en su carpeta, junto."""
+    trozos = []
+    for carpeta, _dirs, ficheros in os.walk(base):
+        for nombre in ficheros:
+            with open(os.path.join(carpeta, nombre), 'rb') as f:
+                trozos.append(f.read())
+    return b''.join(trozos)
+
+
+@pytest.fixture
+def pantalla(entorno, monkeypatch):
+    """La pantalla (Flask) con sesión iniciada y trabajando en la carpeta de la prueba."""
+    import app as aplicacion
+    monkeypatch.setattr(aplicacion, 'EXECUTABLE_DIR', entorno.base)
+    cliente = aplicacion.app.test_client()
+    with cliente.session_transaction() as sesion:
+        sesion['nif'] = 'B00000000'
+    return cliente
+
+
+def test_el_acceso_bueno_se_comprueba_y_se_guarda(entorno):
+    auto.guardar_config(entorno.base, dict(auto.CONFIG_POR_DEFECTO))
+    assert auto.estado(entorno.base)['acceso_listo'] is False
+    # Los espacios y el salto de línea de los extremos son restos de pegar.
+    r = auto.comprobar_y_guardar_acceso(entorno.base, '  B00000000 ', GESTOR_PASSWORD + '\n')
+    assert r['exito'] is True and GESTOR_PASSWORD not in repr(r)
+    assert [(m, u.rsplit('/', 1)[1]) for m, u in GestorFalso.peticiones] == [('POST', 'login-password'), ('GET', 'logout')]
+    cfg = auto.leer_config(entorno.base)
+    assert cfg['gestor_usuario'] == 'B00000000' and cfg['gestor_comprobado_en']
+    assert auto.desproteger(cfg['gestor_password_dpapi']) == GESTOR_PASSWORD
+    assert GESTOR_PASSWORD not in _config_en_disco(entorno.base)
+    estado = auto.estado(entorno.base)
+    assert estado['acceso_listo'] is True and estado['gestor_usuario'] == 'B00000000'
+
+
+def test_un_acceso_que_aikit_rechaza_no_se_guarda(entorno):
+    antes = _config_en_disco(entorno.base)
+    r = auto.comprobar_y_guardar_acceso(entorno.base, 'B00000000', GESTOR_PASSWORD * 2)   # pegada dos veces
+    assert r['exito'] is False and r['motivo'] == 'credenciales' and 'No se ha guardado nada' in r['mensaje']
+    assert _config_en_disco(entorno.base) == antes
+
+
+def test_si_no_se_llega_a_aikit_no_se_guarda(entorno):
+    antes = _config_en_disco(entorno.base)
+    GestorFalso.sin_red = True
+    r = auto.comprobar_y_guardar_acceso(entorno.base, 'B11111111', GESTOR_PASSWORD)
+    assert r['exito'] is False and r['motivo'] == 'conexion' and GESTOR_PASSWORD not in r['mensaje']
+    assert _config_en_disco(entorno.base) == antes
+
+
+@pytest.mark.parametrize('password', [GESTOR_PASSWORD + '\x16', 'clave\ncon salto', 'clave\u200bcon hueco'])
+def test_un_caracter_que_no_se_ve_se_rechaza_sin_llamar_a_aikit(entorno, password):
+    antes = _config_en_disco(entorno.base)
+    r = auto.comprobar_y_guardar_acceso(entorno.base, 'B00000000', password)
+    assert r['exito'] is False and r['motivo'] == 'datos'
+    assert GestorFalso.peticiones == [] and _config_en_disco(entorno.base) == antes
+
+
+def test_la_contrasena_del_gestor_no_se_devuelve_ni_se_anota(entorno, pantalla, capsys):
+    auto.guardar_config(entorno.base, dict(auto.CONFIG_POR_DEFECTO))
+    mala = pantalla.post('/api/auto/acceso', json={'usuario': 'B00000000', 'password': 'clave-equivocada-de-prueba'})
+    assert mala.status_code == 400 and mala.get_json()['motivo'] == 'credenciales'
+    buena = pantalla.post('/api/auto/acceso', json={'usuario': 'B00000000', 'password': GESTOR_PASSWORD})
+    assert buena.status_code == 200 and buena.get_json()['acceso_listo'] is True
+    entorno.pasada(DehuFalso(pendientes=[_item('P1', '1')], realizadas=[_item('R1', '2')]))
+    salida = capsys.readouterr()
+    for clave in (GESTOR_PASSWORD, 'clave-equivocada-de-prueba'):
+        assert clave not in mala.get_data(as_text=True) + buena.get_data(as_text=True)
+        assert clave not in salida.out + salida.err + ''.join(entorno.logs)
+        assert clave.encode() not in _todo_el_disco(entorno.base)
+
+
+def test_el_boton_no_arranca_sin_un_acceso_comprobado(entorno, pantalla):
+    import app as aplicacion
+    # Guardado pero sin comprobar (lo que deja la versión anterior) y sin nada guardado.
+    for cfg in (auto.leer_config(entorno.base), dict(auto.CONFIG_POR_DEFECTO)):
+        auto.guardar_config(entorno.base, cfg)
+        for ruta in ('/api/auto/ejecutar', '/api/auto/subir'):
+            r = pantalla.post(ruta)
+            assert r.status_code == 400 and r.get_json()['falta_acceso'] is True
+    assert aplicacion.dehu_estado['procesando'] is False and GestorFalso.peticiones == []
+
+
+def test_tras_un_rechazo_se_configura_y_se_sube_lo_guardado_sin_pedir_nada_a_dehu(entorno, monkeypatch):
+    dehu = DehuFalso(pendientes=[_item('P1', '1')], realizadas=[_item('R1', '2')])
+    GestorFalso.login_ok = False
+    r = entorno.pasada(dehu)
+    assert r['acceso_no_vale'] is True and entorno.por_subir() == ['P1.zip', 'R1.zip']
+    estado = auto.estado(entorno.base)
+    assert estado['acceso_no_vale'] is True and estado['acceso_listo'] is False
+
+    GestorFalso.login_ok = True
+    assert auto.comprobar_y_guardar_acceso(entorno.base, 'B00000000', GESTOR_PASSWORD)['exito'] is True
+    assert auto.estado(entorno.base)['acceso_listo'] is True
+
+    def dehu_prohibido(self, url, accion, xml):
+        raise AssertionError(f'subir lo guardado no debe llamar a DEHÚ: {accion}')
+    monkeypatch.setattr(DEHuClient, '_soap_call', dehu_prohibido)
+    r = auto.subir_guardado(entorno.base, entorno.logs.append)
+    assert r['entregados'] == 2 and r['quedan_por_subir'] == 0 and 'error_entrega' not in r
+    assert sorted(GestorFalso.recibidos) == ['P1.zip', 'R1.zip'] and entorno.por_subir() == []
+    assert GestorFalso.pendientes == []         # sin listado nuevo no se envía lista de pendientes
+    assert auto.Registro(entorno.base).envio('R1')['estado'] == 'entregado'
+
+
+def test_una_contrasena_guardada_que_no_se_puede_leer_pide_configurar(entorno, monkeypatch):
+    def otra_cuenta(_valor):
+        raise RuntimeError('CryptUnprotectData ha fallado')
+    monkeypatch.setattr(auto, 'desproteger', otra_cuenta)
+    r = entorno.pasada(DehuFalso(realizadas=[_item('R1', '2')]))
+    assert r['acceso_no_vale'] is True and entorno.por_subir() == ['R1.zip']
+
+
+def test_auto_configurar_comprueba_el_acceso_antes_de_guardarlo(entorno, monkeypatch, capsys):
+    import getpass
+    antes = _config_en_disco(entorno.base)
+    monkeypatch.setattr('builtins.input', lambda _pregunta: '')
+    monkeypatch.setattr(getpass, 'getpass', lambda _pregunta: GESTOR_PASSWORD * 2)
+    assert auto.main(['configurar'], entorno.base, None) == 0
+    assert '[ERROR] AiKit no reconoce' in capsys.readouterr().out
+    assert json.loads(_config_en_disco(entorno.base))['gestor_password_dpapi'] == json.loads(antes)['gestor_password_dpapi']
+
+    monkeypatch.setattr(getpass, 'getpass', lambda _pregunta: GESTOR_PASSWORD)
+    assert auto.main(['configurar'], entorno.base, None) == 0
+    assert '[OK] AiKit acepta' in capsys.readouterr().out
+    assert auto.estado(entorno.base)['acceso_listo'] is True

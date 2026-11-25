@@ -29,6 +29,7 @@ import shutil
 import subprocess
 import sys
 import time
+import unicodedata
 import zipfile
 
 import requests
@@ -65,6 +66,9 @@ CONFIG_POR_DEFECTO = {
     'aceptar_notificaciones_pendientes': False,
     'gestor_usuario': '',
     'gestor_password_dpapi': '',
+    # Cuándo se comprobó por última vez que AiKit acepta ese usuario y esa
+    # contraseña. Vacío = guardado sin comprobar: el botón no arranca.
+    'gestor_comprobado_en': '',
     # Solo para la tarea programada (sin nadie delante):
     'pfx_path': '',
     'pfx_password_dpapi': '',
@@ -73,6 +77,10 @@ CONFIG_POR_DEFECTO = {
 
 class EntregaError(Exception):
     """El gestor no ha recibido o no ha procesado un lote."""
+
+
+class AccesoRechazado(EntregaError):
+    """El gestor no reconoce el usuario o la contraseña (HTTP 401)."""
 
 
 # ══════════════════════════════════════════════════════════════════
@@ -388,6 +396,64 @@ def _json(resp, que):
     return datos
 
 
+def _entrar(s, usuario: str, password: str) -> None:
+    """Entra en el gestor con la sesión `s`. Un 401 es AccesoRechazado."""
+    resp = s.post(f'{GESTOR_URL}/login-password', timeout=60, allow_redirects=False,
+                  json={'usuario': usuario, 'password': password})
+    if resp.status_code == 401:
+        raise AccesoRechazado('AiKit no reconoce el usuario o la contraseña.')
+    _json(resp, 'entrada al gestor')
+
+
+def _salir(s) -> None:
+    try:
+        s.get(f'{GESTOR_URL}/logout', timeout=30, allow_redirects=False)
+    except requests.RequestException:
+        pass
+
+
+def comprobar_y_guardar_acceso(base_dir, usuario, password) -> dict:
+    """Prueba el usuario y la contraseña del gestor entrando y saliendo, y solo
+    si AiKit los acepta los guarda (la contraseña, cifrada con DPAPI). Si no,
+    la configuración anterior queda como estaba. La contraseña no se escribe en
+    ningún registro ni se devuelve. Devuelve {'exito', 'motivo', 'mensaje'};
+    motivo: 'datos', 'credenciales', 'conexion' o 'guardar'."""
+    def no(motivo, mensaje):
+        return {'exito': False, 'motivo': motivo, 'mensaje': mensaje + ' No se ha guardado nada.'}
+
+    if not isinstance(usuario, str) or not isinstance(password, str):
+        return no('datos', 'Faltan el usuario o la contraseña.')
+    # Los espacios y saltos de línea de los extremos son restos de copiar y pegar.
+    usuario, password = usuario.strip(), password.strip()
+    if not usuario or not password:
+        return no('datos', 'Faltan el usuario o la contraseña.')
+    # Un carácter que no se ve (el que deja Ctrl+V en algunas ventanas, un salto
+    # de línea en medio) hace que AiKit rechace la contraseña sin que se note.
+    if any(unicodedata.category(c)[0] == 'C' for c in usuario + password):
+        return no('datos', 'El usuario o la contraseña llevan un carácter que no se ve '
+                           '(un salto de línea o un resto de pegar). Bórralos y escríbelos de nuevo.')
+
+    s = requests.Session()
+    try:
+        _entrar(s, usuario, password)
+    except AccesoRechazado:
+        return no('credenciales', 'AiKit no reconoce ese usuario o esa contraseña.')
+    except (EntregaError, requests.RequestException) as e:
+        detalle = str(e) if isinstance(e, EntregaError) else type(e).__name__
+        return no('conexion', f'No se ha podido comprobar con AiKit ({detalle}). Vuelve a intentarlo.')
+    finally:
+        _salir(s)
+
+    try:
+        cfg = leer_config(base_dir)
+        cfg.update(gestor_usuario=usuario, gestor_password_dpapi=proteger(password),
+                   gestor_comprobado_en=_ahora())
+        guardar_config(base_dir, cfg)
+    except (RuntimeError, OSError) as e:
+        return no('guardar', f'AiKit acepta el acceso, pero no se ha podido guardar en este ordenador ({e}).')
+    return {'exito': True, 'motivo': '', 'mensaje': 'AiKit acepta el usuario y la contraseña. Guardados.'}
+
+
 def informar_pendientes(s, reg: Registro, informe: dict, log) -> dict:
     """Envía al gestor la lista de notificaciones de Red.es que siguen
     pendientes. Solo datos del listado de DEHÚ: no se abre ni se acepta nada.
@@ -424,8 +490,7 @@ def entregar_todo(cfg: dict, reg: Registro, log, password: str, informe_pendient
 
     s = requests.Session()
     try:
-        _json(s.post(f'{GESTOR_URL}/login-password', timeout=60, allow_redirects=False,
-                     json={'usuario': cfg['gestor_usuario'], 'password': password}), 'entrada al gestor')
+        _entrar(s, cfg['gestor_usuario'], password)
 
         if informe_pendientes is not None:
             r.update(informar_pendientes(s, reg, informe_pendientes, log))
@@ -454,13 +519,10 @@ def entregar_todo(cfg: dict, reg: Registro, log, password: str, informe_pendient
             reg.anotar_entrega(os.path.basename(ruta) for ruta in lote)
             r['entregados'] += len(lote)
             r['errores_gestor'] += int(fin.get('errores') or 0)
-            log(f'[OK] Lote entregado: {len(lote)} ZIP '
+            log(f'[OK] Lote entregado: {len(lote)} ZIP, van {r["entregados"]} de {len(pendientes)} '
                 f'(el gestor clasifica {fin.get("exitosos", "?")}, falla {fin.get("errores", "?")})')
     finally:
-        try:
-            s.get(f'{GESTOR_URL}/logout', timeout=30, allow_redirects=False)
-        except requests.RequestException:
-            pass
+        _salir(s)
     r['por_entregar'] -= r['entregados']
     return r
 
@@ -496,13 +558,34 @@ def ejecutar(client, base_dir, log) -> dict:
     informe = {'generado_en': _ahora(), 'listado_completo': bajado.pop('pendientes_listado_completo'),
                'pendientes': bajado.pop('pendientes_lista')}
     resumen.update(bajado)
+    return _entregar_y_cerrar(cfg, reg, log, resumen, informe)
 
+
+def subir_guardado(base_dir, log) -> dict:
+    """Entrega lo que ya está bajado en por_subir. No pide nada a DEHÚ ni
+    envía lista de pendientes (no hay listado nuevo del que sacarla)."""
+    resumen = {'inicio': _ahora(), 'solo_entrega': True}
+    log('[INFO] ========== SUBIR A AIKIT LO YA BAJADO (no se pide nada a DEHÚ) ==========')
+    return _entregar_y_cerrar(leer_config(base_dir), Registro(base_dir), log, resumen, None)
+
+
+def _entregar_y_cerrar(cfg: dict, reg: Registro, log, resumen: dict, informe) -> dict:
+    """Entrega lo que hay en por_subir y anota la pasada en el registro."""
     if not cfg['gestor_usuario'] or not cfg['gestor_password_dpapi']:
-        resumen['error_entrega'] = 'Falta configurar el usuario del gestor (auto configurar).'
+        resumen['error_entrega'] = 'Falta configurar el acceso a AiKit.'
     else:
+        # `acceso_no_vale`: la pantalla lo dice con palabras llanas y ofrece
+        # configurar el acceso de nuevo.
         try:
             resumen.update(entregar_todo(cfg, reg, log, desproteger(cfg['gestor_password_dpapi']), informe))
-        except (EntregaError, requests.RequestException, RuntimeError) as e:
+        except AccesoRechazado:
+            resumen['acceso_no_vale'] = True
+            resumen['error_entrega'] = 'AiKit no reconoce el usuario o la contraseña guardados.'
+        except RuntimeError:        # DPAPI: guardada con otra cuenta de Windows o en otro ordenador
+            resumen['acceso_no_vale'] = True
+            resumen['error_entrega'] = ('La contraseña de AiKit guardada no se puede leer con esta cuenta '
+                                        'de Windows en este ordenador.')
+        except (EntregaError, requests.RequestException) as e:
             resumen['error_entrega'] = str(e)
     if resumen.get('error_entrega'):
         log(f'[ERROR] Entrega: {resumen["error_entrega"]} Lo bajado queda guardado y se reintenta.')
@@ -521,8 +604,18 @@ def estado(base_dir) -> dict:
     cfg = leer_config(base_dir)
     reg = Registro(base_dir)
     pasadas = reg.datos.get('pasadas', [])
+    ultima = pasadas[-1] if pasadas else {}
+    configurado = bool(cfg['gestor_usuario'] and cfg['gestor_password_dpapi'])
+    comprobado = cfg['gestor_comprobado_en'] if configurado else ''
+    # No vale: la última entrega no pudo entrar, después de la última comprobación.
+    no_vale = bool(ultima.get('acceso_no_vale')) and ultima.get('fin', '') > comprobado
     return {
-        'gestor_configurado': bool(cfg['gestor_usuario'] and cfg['gestor_password_dpapi']),
+        'gestor_configurado': configurado,
+        'gestor_usuario': cfg['gestor_usuario'],
+        'acceso_comprobado_en': comprobado,
+        'acceso_no_vale': no_vale,
+        # El botón solo arranca con un acceso que AiKit ha aceptado.
+        'acceso_listo': bool(comprobado) and not no_vale,
         'aceptar_notificaciones_pendientes': cfg['aceptar_notificaciones_pendientes'],
         'quedan_por_subir': len(os.listdir(reg.por_subir)),
         'ultima_pasada': pasadas[-1] if pasadas else None,
@@ -552,12 +645,15 @@ def _configurar(base_dir):
     import getpass
     cfg = leer_config(base_dir)
     print('Configuración de la pasada «todo lo de Red.es». Intro deja el valor como está.\n')
-    usuario = input(f'Usuario del gestor de AiKit [{cfg["gestor_usuario"]}]: ').strip()
-    if usuario:
-        cfg['gestor_usuario'] = usuario
-    password = getpass.getpass('Contraseña del gestor (no se muestra): ')
+    print('El acceso a AiKit se configura mejor en la pantalla («Configurar acceso a AiKit»).')
+    usuario = input(f'Usuario del gestor de AiKit [{cfg["gestor_usuario"]}]: ').strip() or cfg['gestor_usuario']
+    password = getpass.getpass('Contraseña del gestor (no se muestra; pégala una sola vez): ')
     if password:
-        cfg['gestor_password_dpapi'] = proteger(password)
+        r = comprobar_y_guardar_acceso(base_dir, usuario, password)
+        print(('[OK] ' if r['exito'] else '[ERROR] ') + r['mensaje'])
+        cfg = leer_config(base_dir)     # con el acceso recién guardado, si se ha aceptado
+    elif usuario != cfg['gestor_usuario']:
+        print('[ERROR] Para cambiar el usuario hay que escribir también la contraseña. No se ha cambiado.')
     print('\nSolo si se va a programar la pasada diaria sin nadie delante:')
     pfx = input(f'Ruta del certificado .pfx [{cfg["pfx_path"]}]: ').strip().strip('"')
     if pfx:
