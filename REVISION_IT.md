@@ -146,12 +146,21 @@ En un PC con Windows 11 y Python 3.11, con un certificado de AiKit (no el vuestr
 
 Esa prueba encontró y corrigió dos fallos: el listado de realizadas pedía 30 días y DEHÚ lo rechazaba (error 4224), y una pasada con el listado rechazado terminaba sin error.
 
+## Probado el acceso a AiKit (25-11-2026)
+
+En el mismo PC (Windows 11, Python 3.11). No se subió ningún fichero a la web real de AiKit ni se llamó a DEHÚ.
+
+- Con el `.exe` generado con este código y la **web real de AiKit, solo entrar y salir**: la contraseña pegada dos veces y un usuario equivocado se rechazan y no se guarda nada (no llega a existir `auto_config.json`); una contraseña con el carácter de Ctrl+V se rechaza sin llamar a AiKit; el acceso bueno se acepta y se guarda, con la contraseña cifrada por DPAPI y sin texto en claro en `auto_config.json`. Sin acceso comprobado, el botón y «Subir ahora» contestan que antes hay que configurarlo.
+- Un `auto_config.json` como el que deja la versión anterior (acceso guardado sin fecha de comprobación) se lee como «guardado pero sin comprobar» y el botón no arranca.
+- Desde el código, con DPAPI de verdad y un **gestor de mentira en el propio PC**: el botón abre el cuadro; una contraseña mala se rechaza; con la buena, el cuadro ofrece subir lo guardado y «Subir ahora» entrega 45 ficheros en 3 lotes sin llamar a DEHÚ ni enviar lista de pendientes. Después no hay contraseña en claro en ningún fichero de la carpeta ni en la salida del programa.
+- En el uso real en QEV (24 y 25-11-2026), con vuestro certificado, las pasadas bajaron de DEHÚ lo de Red.es (998 y 357 envíos las dos primeras), una alcanzó el tope diario de aperturas (4305) y siguió con lo ya realizado, y ninguna pudo subir porque el acceso a AiKit guardado por la ventana de órdenes no era correcto. De ahí sale la configuración en pantalla.
+
 ## Lo que no está probado
 
-- **Aceptar notificaciones pendientes** (`PeticionAcceso` de una notificación) y **abrir comunicaciones pendientes**: no se han ejecutado contra el DEHÚ real, a propósito.
-- **El gestor real**: la entrega solo se ha hecho contra un gestor de mentira. En particular, no se ha visto cómo clasifica el gestor real un `<nombre>.pdf.zip`.
-- **La lista de pendientes con datos reales**: el buzón de la prueba no tenía notificaciones de Red.es pendientes. La ruta `POST /api/dehu-pendientes` del gestor está preparada aparte y aún no desplegada; hasta entonces el gestor contesta 404 y la pasada lo anota y sigue.
-- **El botón de la pantalla** en Windows (la pasada se ha probado por la línea de órdenes y la tarea programada).
-- **Los topes de DEHÚ** (4225 y 4305): no aparecieron en la prueba; su tratamiento solo está probado con respuestas de mentira.
-- Vuestro certificado y vuestro ordenador.
+- **Aceptar notificaciones pendientes** (`PeticionAcceso` de una notificación): no se ha ejecutado contra el DEHÚ real, a propósito. **Abrir comunicaciones pendientes** solo se ha ejecutado en vuestro uso real.
+- **El gestor real**: con él solo se ha probado entrar y salir; la entrega solo se ha hecho contra un gestor de mentira. En particular, no se ha visto cómo clasifica el gestor real un `<nombre>.pdf.zip`.
+- **La lista de pendientes con datos reales**: no ha llegado ninguna al gestor. Si el gestor no admitiera la ruta `POST /api/dehu-pendientes` (404), la pasada lo anota y sigue.
+- **Una pasada completa lanzada con el botón** (bajar de DEHÚ y subir en la misma pasada): sus piezas se han probado por separado. La pantalla se ha manejado con Chromium; no con Edge.
+- **El tope de DEHÚ por envío** (4225): solo está probado con respuestas de mentira.
+- La subida desde vuestro ordenador.
 - El `.exe` de `dist/` es el de la versión anterior: no incluye nada de esto. Para generarlo con este código: `pyinstaller --onefile --console --add-data "templates;templates" --add-data "static;static" --name DescargadorDehuQEV app.py` (con consola, porque `auto configurar` pregunta por teclado). Con esa orden se generó el de la prueba.
